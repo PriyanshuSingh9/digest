@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Lesson 0001: Tauri v2 Architecture & IPC</title>
+        <link rel="stylesheet" href="../assets/lesson.css" />
+        <style>
+            .architecture-diagram {
+                display: flex;
+                justify-content: space-around;
+                align-items: center;
+                gap: 1rem;
+                margin: 1.5rem 0;
+                flex-wrap: wrap;
+            }
+            .arch-box {
+                flex: 1;
+                min-width: 220px;
+                padding: 1.2rem;
+                border-radius: var(--radius);
+                border: 1px solid var(--border);
+                background: var(--surface);
+                text-align: center;
+            }
+            .arch-box h4 {
+                margin-bottom: 0.5rem;
+                color: var(--accent);
+            }
+            .arch-box p {
+                font-size: 0.85rem;
+                margin-bottom: 0;
+                color: var(--text-muted);
+            }
+            .arch-bridge {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                font-weight: 600;
+                color: var(--text-muted);
+                font-size: 0.8rem;
+            }
+            .arch-bridge span {
+                background: var(--code-bg);
+                padding: 0.2rem 0.5rem;
+                border-radius: 4px;
+                margin: 0.2rem 0;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <div class="lesson-meta">
+                <span class="badge">Lesson 0001</span>
+                <span>Digest Engine Workspace</span>
+            </div>
+            <h1>Tauri v2 Architecture & The IPC Bridge</h1>
+            <p class="subtitle">
+                Understand the two-process runtime model and how frontend React
+                talks to Rust.
+            </p>
+        </header>
+
+        <main>
+            <h2>1. The Two-Process Mental Model</h2>
+            <p>
+                Unlike traditional Electron apps that ship a heavyweight bundled
+                Chromium browser and Node.js runtime,
+                <strong>Tauri v2</strong> uses a lightweight, secure two-process
+                model:
+            </p>
+
+            <div class="architecture-diagram">
+                <div class="arch-box">
+                    <h4>Frontend (Webview)</h4>
+                    <p><strong>React 19 + TypeScript</strong></p>
+                    <p>
+                        Runs inside the OS native webview (WebKitGTK on Linux).
+                        Renders the UI, presentation slides, and user controls.
+                    </p>
+                </div>
+
+                <div class="arch-bridge">
+                    <span>⚡ IPC Bridge ⚡</span>
+                    <span><code>invoke()</code> ➔</span>
+                    <span><code>emit()</code> / <code>listen()</code></span>
+                </div>
+
+                <div class="arch-box">
+                    <h4>Backend (Tauri Core)</h4>
+                    <p><strong>Compiled Rust Binary</strong></p>
+                    <p>
+                        Runs with native OS privileges. Manages audio playback,
+                        file caching, persistent state, and system APIs.
+                    </p>
+                </div>
+            </div>
+
+            <div class="callout">
+                <div class="callout-title">Why This Matters for Digest</div>
+                <p>
+                    In the <strong>Digest AI Article Engine</strong>, the UI
+                    needs to maintain 60 FPS visual synchronization with audio.
+                    Heavy tasks (audio generation, network fetching, token
+                    processing) run in the Rust backend without blocking the
+                    React render thread.
+                </p>
+            </div>
+
+            <h2>2. How the IPC Bridge Works</h2>
+            <p>
+                The frontend cannot directly access native OS resources (like
+                reading random disk files or spawning threads) for security.
+                Instead, it communicates through two primary IPC channels:
+            </p>
+
+            <ol>
+                <li>
+                    <strong>Commands (<code>invoke</code>):</strong> A
+                    request-response Remote Procedure Call (RPC). The frontend
+                    asks Rust to do something and awaits a serialized JSON
+                    result.
+                </li>
+                <li>
+                    <strong
+                        >Events (<code>emit</code> &amp;
+                        <code>listen</code>):</strong
+                    >
+                    A pub/sub channel. Rust can continuously stream events
+                    (e.g., audio clock timestamps) to the frontend.
+                </li>
+            </ol>
+
+            <h2>3. Concrete Code Walkthrough</h2>
+            <p>Let's look at the default boilerplate in your repository:</p>
+
+            <div class="card">
+                <h3>
+                    Rust Command Definition (<code>src-tauri/src/lib.rs</code>)
+                </h3>
+                <pre><code>#[tauri::command]
+fn greet(name: &str) -> String {
+    format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![greet])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}</code></pre>
+            </div>
+
+            <div class="card">
+                <h3>Frontend Invocation (<code>src/App.tsx</code>)</h3>
+                <pre><code>import { invoke } from "@tauri-apps/api/core";
+
+// Inside a React component:
+async function greetUser() {
+  // Arguments are passed as a JSON object matching the Rust parameter names
+  const response = await invoke&lt;string&gt;("greet", { name: "Learner" });
+  console.log(response);
+}</code></pre>
+            </div>
+
+            <h2>4. Quick Retrieval Practice</h2>
+            <p>
+                Test your storage strength on the core architectural boundaries:
+            </p>
+
+            <div class="quiz-widget" id="quiz-1">
+                <h3>
+                    Which statement accurately describes how Tauri handles
+                    frontend-to-backend communication?
+                </h3>
+                <div class="quiz-options">
+                    <div class="quiz-option">
+                        Frontend directly executes native system calls without
+                        crossing any process boundary.
+                    </div>
+                    <div class="quiz-option">
+                        Frontend invokes serialized asynchronous RPC commands
+                        handled by registered Rust functions.
+                    </div>
+                    <div class="quiz-option">
+                        Frontend bundles an embedded Node.js instance to run
+                        native scripts asynchronously.
+                    </div>
+                    <div class="quiz-option">
+                        Frontend establishes a local raw TCP socket to pipe
+                        arbitrary raw system payloads.
+                    </div>
+                </div>
+                <div class="quiz-feedback"></div>
+            </div>
+
+            <h2>5. Primary Source & Next Steps</h2>
+            <div class="card">
+                <p>
+                    <strong>Primary Source:</strong> Read the official
+                    <a
+                        href="https://v2.tauri.app/concept/inter-process-communication/"
+                        target="_blank"
+                        >Tauri v2 IPC Architecture Guide</a
+                    >.
+                </p>
+                <p>
+                    <strong>Quick Reference:</strong> Check out the companion
+                    <a href="../reference/tauri-v2-core-cheatsheet.html"
+                        >Tauri v2 Core Reference Card</a
+                    >.
+                </p>
+                <p>
+                    <em
+                        >Have questions or want to try creating a custom command
+                        for the Digest engine? Ask me anytime!</em
+                    >
+                </p>
+            </div>
+        </main>
+
+        <footer>
+            <div>Digest Project — Lesson 0001</div>
+            <div>
+                <a href="../reference/tauri-v2-core-cheatsheet.html"
+                    >View Reference Card ➔</a
+                >
+            </div>
+        </footer>
+
+        <script src="../assets/lesson.js"></script>
+        <script>
+            initQuiz(
+                "quiz-1",
+                1,
+                "Commands pass arguments via JSON-RPC across the IPC boundary to Rust functions registered in <code>generate_handler!</code>.",
+                "Tauri uses an asynchronous IPC bridge (commands and events) between the webview and compiled Rust core, not Node.js or direct syscalls.",
+            );
+        </script>
+    </body>
+</html>

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tauri v2 Core Reference & Cheat Sheet</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+  <style>
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 700px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1.5rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.6rem 0.8rem;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    th {
+      background: var(--code-bg);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="lesson-meta">
+      <span class="badge">Reference Card</span>
+      <span>Digest Engine Workspace</span>
+    </div>
+    <h1>Tauri v2 Core Architecture & IPC Reference</h1>
+    <p class="subtitle">Compressed reference for commands, events, state injection, and permissions.</p>
+  </header>
+
+  <main>
+    <h2>1. Process Model & IPC Primitives</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Pattern</th>
+          <th>Flow Direction</th>
+          <th>Protocol / Type</th>
+          <th>Digest Engine Use Case</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Command (`invoke`)</strong></td>
+          <td>Frontend ➔ Rust (Req / Res)</td>
+          <td>JSON-RPC Async Promise</td>
+          <td>Trigger article parsing, load files, start audio generation</td>
+        </tr>
+        <tr>
+          <td><strong>Event (`emit` / `listen`)</strong></td>
+          <td>Rust ➔ Frontend (Pub / Sub)</td>
+          <td>Streaming / One-way Push</td>
+          <td>Audio playback progress clock, timeline step updates</td>
+        </tr>
+        <tr>
+          <td><strong>State (`tauri::State`)</strong></td>
+          <td>Rust Core internal</td>
+          <td>Type-safe DI via `manage()`</td>
+          <td>Active presentation session, audio engine handle, cache</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>2. Command Signatures Cheat Sheet</h2>
+    
+    <div class="grid-2">
+      <div>
+        <h3>Frontend (TypeScript)</h3>
+        <pre><code>import { invoke } from "@tauri-apps/api/core";
+
+// 1. Simple invoke
+const greeting = await invoke&lt;string&gt;("greet", {
+  name: "Learner"
+});
+
+// 2. Invoking with custom error handling
+try {
+  const result = await invoke&lt;ArticleData&gt;("parse_article", {
+    url: "https://example.com/post"
+  });
+} catch (err) {
+  console.error("Rust error:", err);
+}</code></pre>
+      </div>
+
+      <div>
+        <h3>Backend (Rust - `src-tauri/src/lib.rs`)</h3>
+        <pre><code>// 1. Basic command
+#[tauri::command]
+fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+// 2. Command returning Result (Error handling)
+#[tauri::command]
+async fn parse_article(url: String) -> Result&lt;ArticleData, String&gt; {
+    if !url.starts_with("http") {
+        return Err("Invalid URL scheme".into());
+    }
+    Ok(ArticleData::from_url(&url).await)
+}</code></pre>
+      </div>
+    </div>
+
+    <h2>3. State Injection in Commands</h2>
+    <pre><code>use std::sync::Mutex;
+use tauri::State;
+
+struct AudioEngineState {
+    current_timestamp_ms: Mutex&lt;u64&gt;,
+}
+
+#[tauri::command]
+fn update_timeline_clock(
+    new_time: u64,
+    state: State&lt;'_, AudioEngineState&gt;
+) -> Result&lt;u64, String&gt; {
+    let mut clock = state.current_timestamp_ms.lock().unwrap();
+    *clock = new_time;
+    Ok(*clock)
+}
+
+// Registering in run():
+// tauri::Builder::default()
+//     .manage(AudioEngineState { current_timestamp_ms: Mutex::new(0) })
+//     .invoke_handler(tauri::generate_handler![update_timeline_clock])</code></pre>
+
+    <h2>4. Tauri v2 Capability Configuration (`src-tauri/capabilities/default.json`)</h2>
+    <pre><code>{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default"
+  ]
+}</code></pre>
+  </main>
+
+  <footer>
+    <div>Digest Project — Tauri v2 Reference</div>
+    <div><a href="../lessons/0001-tauri-architecture-and-ipc.html">Go to Lesson 0001 ➔</a></div>
+  </footer>
+</body>
+</html>
