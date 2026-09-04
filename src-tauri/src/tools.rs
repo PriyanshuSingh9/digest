@@ -1,17 +1,32 @@
 use crate::{
-    AnalysisDraft, ArticleIngestionService, ArtifactEnvelope, DigestError, DigestService,
-    IngestionError,
+    ArticleIngestionService, ArtifactEnvelope, DigestError, DigestService, IngestionError,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimKind {
+    SourceDerived,
+    Inference,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisClaim {
+    pub text: String,
+    pub source_blocks: Vec<String>,
+    pub kind: ClaimKind,
+}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteAnalysisInput {
     pub job_id: String,
     pub article_id: String,
-    pub summary: String,
+    pub central_argument: AnalysisClaim,
+    pub learning_points: Vec<AnalysisClaim>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
@@ -54,6 +69,8 @@ pub struct NarrationSegmentDraft {
     pub tts_text: String,
     pub source_blocks: Vec<String>,
     pub presentation_type: PresentationType,
+    pub importance: NarrationImportance,
+    pub intent: NarrationIntent,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
@@ -66,6 +83,23 @@ pub enum PresentationType {
     Diagram,
     Image,
     Quote,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NarrationImportance {
+    Core,
+    Supporting,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NarrationIntent {
+    Introduction,
+    Explanation,
+    Example,
+    Comparison,
+    Takeaway,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -91,11 +125,43 @@ impl DigestTools {
         &self,
         input: WriteAnalysisInput,
     ) -> Result<WriteAnalysisOutput, DigestError> {
-        let artifact = self.service.write_analysis(AnalysisDraft {
-            job_id: input.job_id,
-            article_id: input.article_id,
-            summary: input.summary,
-        })?;
+        if input.job_id.trim().is_empty()
+            || input.article_id.trim().is_empty()
+            || input.learning_points.is_empty()
+        {
+            return Err(DigestError::InvalidInput(
+                "analysis requires jobId, articleId, centralArgument, and learningPoints".into(),
+            ));
+        }
+        let article = self.service.read_artifact(&input.article_id)?;
+        if article.job_id != input.job_id || article.kind != crate::ArtifactKind::NormalizedArticle
+        {
+            return Err(DigestError::InvalidInput(
+                "analysis articleId must reference this job's normalized article".into(),
+            ));
+        }
+        let source_blocks: HashSet<&str> = article
+            .payload
+            .get("blocks")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block.get("id").and_then(serde_json::Value::as_str))
+            .collect();
+        validate_analysis_claim("centralArgument", &input.central_argument, &source_blocks)?;
+        for (index, claim) in input.learning_points.iter().enumerate() {
+            validate_analysis_claim(&format!("learningPoints[{}]", index), claim, &source_blocks)?;
+        }
+        let artifact = self.service.persist_json_artifact(
+            &input.job_id,
+            crate::ArtifactKind::Analysis,
+            serde_json::json!({
+                "schemaVersion": "1.1",
+                "articleId": input.article_id,
+                "centralArgument": input.central_argument,
+                "learningPoints": input.learning_points,
+            }),
+        )?;
         Ok(WriteAnalysisOutput {
             artifact_id: artifact.artifact_id,
             content_hash: artifact.content_hash,
@@ -152,6 +218,21 @@ impl DigestTools {
             .flatten()
             .filter_map(|block| block.get("id").and_then(serde_json::Value::as_str))
             .collect();
+        let referenced_blocks: HashSet<String> = input
+            .segments
+            .iter()
+            .flat_map(|segment| segment.source_blocks.iter().cloned())
+            .collect();
+        let core_segment_count = input
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.importance, NarrationImportance::Core))
+            .count();
+        let source_coverage_percent = if source_blocks.is_empty() {
+            0
+        } else {
+            referenced_blocks.len() * 100 / source_blocks.len()
+        };
         let mut segments = Vec::with_capacity(input.segments.len());
         for (index, segment) in input.segments.into_iter().enumerate() {
             if segment.display_text.trim().is_empty()
@@ -180,17 +261,47 @@ impl DigestTools {
                 "sourceBlocks": segment.source_blocks,
                 "provenance": {"type": "source_derived"},
                 "presentation": {"type": segment.presentation_type},
+                "importance": segment.importance,
+                "intent": segment.intent,
             }));
         }
         self.service.persist_json_artifact(
             &input.job_id,
             crate::ArtifactKind::NarrationPlan,
             serde_json::json!({
-                "schemaVersion": "1.0",
+                "schemaVersion": "1.1",
                 "articleId": input.article_id,
                 "title": input.title,
                 "segments": segments,
+                "diagnostics": {
+                    "referencedBlockCount": referenced_blocks.len(),
+                    "sourceBlockCount": source_blocks.len(),
+                    "sourceCoveragePercent": source_coverage_percent,
+                    "coreSegmentCount": core_segment_count,
+                },
             }),
         )
     }
+}
+
+fn validate_analysis_claim(
+    field: &str,
+    claim: &AnalysisClaim,
+    source_blocks: &HashSet<&str>,
+) -> Result<(), DigestError> {
+    if claim.text.trim().is_empty() || claim.source_blocks.is_empty() {
+        return Err(DigestError::InvalidInput(format!(
+            "{field} requires text and sourceBlocks"
+        )));
+    }
+    if let Some(unknown) = claim
+        .source_blocks
+        .iter()
+        .find(|source_block| !source_blocks.contains(source_block.as_str()))
+    {
+        return Err(DigestError::InvalidInput(format!(
+            "{field} references unknown source block {unknown}"
+        )));
+    }
+    Ok(())
 }

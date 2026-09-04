@@ -20,7 +20,8 @@ pub use ingestion::{
 };
 pub use mcp::DigestMcpServer;
 pub use tools::{
-    DigestTools, IngestArticleInput, IngestArticleOutput, NarrationSegmentDraft, PresentationType,
+    AnalysisClaim, ClaimKind, DigestTools, IngestArticleInput, IngestArticleOutput,
+    NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType,
     ReadArtifactInput, ReadArtifactOutput, WriteAnalysisInput, WriteAnalysisOutput,
     WriteNarrationPlanInput,
 };

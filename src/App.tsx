@@ -42,6 +42,7 @@ type ExtractionDiagnostics = {
   wordCount: number;
   blockCount: number;
   imageCount: number;
+  diagramCount?: number;
   warnings: string[];
 };
 type ArticleImage = {
@@ -86,13 +87,14 @@ function App() {
   const [provider, setProvider] = useState<Provider>("open_code");
   const [adapterCommand, setAdapterCommand] = useState("");
   const [prompt, setPrompt] = useState(
-    "Read the normalized article artifact. Identify its central argument and most important learning points, then use Digest write_analysis exactly once.",
+    "Read the normalized article artifact. Identify its central argument and most important learning points with source-block provenance, then use Digest write_analysis exactly once.",
   );
   const [snapshot, setSnapshot] = useState<RunSnapshot>(EMPTY_SNAPSHOT);
   const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [allowOncePermissions, setAllowOncePermissions] = useState(false);
+  const [refreshSource, setRefreshSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AgentRunResult | null>(null);
 
@@ -104,7 +106,7 @@ function App() {
     [selectedArtifact, snapshot.artifacts],
   );
   const articleQuality = useMemo(() => {
-    const article = snapshot.artifacts.find(
+    const article = [...snapshot.artifacts].reverse().find(
       (artifact) => artifact.kind === "normalized_article",
     );
     if (!article || !article.payload.diagnostics) return null;
@@ -137,7 +139,15 @@ function App() {
     setResult(null);
     setSelectedArtifact(null);
     try {
-      setSnapshot(await invoke<RunSnapshot>("run_snapshot", { jobId: id }));
+      const loaded = await invoke<RunSnapshot>("run_snapshot", { jobId: id });
+      setSnapshot(loaded);
+      const article = [...loaded.artifacts]
+        .reverse()
+        .find((artifact) => artifact.kind === "normalized_article");
+      if (typeof article?.payload.canonicalUrl === "string") {
+        setArticleUrl(article.payload.canonicalUrl);
+      }
+      setRefreshSource(false);
     } catch (reason) {
       setError(String(reason));
     }
@@ -149,6 +159,7 @@ function App() {
     setSelectedArtifact(null);
     setResult(null);
     setError(null);
+    setRefreshSource(false);
   }
 
   useEffect(() => {
@@ -192,6 +203,7 @@ function App() {
             prompt,
             provider: providerInput,
             allowOncePermissions,
+            refreshSource,
           },
         }),
       );
@@ -327,6 +339,17 @@ function App() {
               Digest captures the source before the agent starts.
             </span>
           </label>
+          <label className="permission-control">
+            <input
+              type="checkbox"
+              checked={refreshSource}
+              onChange={(event) => setRefreshSource(event.currentTarget.checked)}
+            />
+            <span>
+              Fetch a fresh source capture. Leave off to reuse this job&apos;s
+              latest immutable article when retrying.
+            </span>
+          </label>
           <label>
             Working directory
             <input
@@ -420,7 +443,8 @@ function App() {
                       <h3 id="quality-title">Capture quality</h3>
                       <span>
                         {articleQuality.diagnostics.blockCount} blocks ·{" "}
-                        {articleQuality.diagnostics.wordCount} words
+                        {articleQuality.diagnostics.wordCount} words ·{" "}
+                        {articleQuality.diagnostics.diagramCount ?? 0} diagrams
                       </span>
                     </div>
                     <strong>{articleQuality.diagnostics.confidence}%</strong>

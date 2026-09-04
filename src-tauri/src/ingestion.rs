@@ -14,7 +14,7 @@ use std::{
 use thiserror::Error;
 use url::Url;
 
-const ARTICLE_SCHEMA_VERSION: &str = "1.1";
+const ARTICLE_SCHEMA_VERSION: &str = "1.2";
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
@@ -76,6 +76,10 @@ pub enum ArticleBlock {
         id: String,
         text: String,
     },
+    Diagram {
+        id: String,
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +117,7 @@ pub struct ExtractionDiagnostics {
     pub word_count: usize,
     pub block_count: usize,
     pub image_count: usize,
+    pub diagram_count: usize,
     pub warnings: Vec<String>,
 }
 
@@ -273,30 +278,55 @@ impl ArticleIngestionService {
         let html = String::from_utf8_lossy(body);
         let document = Html::parse_document(&html);
         let root = select_root(&document)?;
-        let block_selector = selector("h1,h2,h3,h4,h5,h6,p,pre,ul,ol,blockquote")?;
+        let selected_article_root = root.value().name() == "article";
+        let block_selector = selector("h1,h2,h3,h4,h5,h6,p,pre,ul,ol,blockquote,svg")?;
         let mut blocks = Vec::new();
+        let mut pruned_boilerplate = false;
         for element in root.select(&block_selector) {
+            let text = element_text(element);
+            if is_trailing_boilerplate_boundary(element.value().name(), &text) {
+                pruned_boilerplate = true;
+                break;
+            }
+            if is_article_metadata(element.value().name(), &text) {
+                pruned_boilerplate = true;
+                continue;
+            }
             let id = format!("block-{}", blocks.len() + 1);
             if let Some(block) = article_block(element, id)? {
                 blocks.push(block);
             }
         }
         let image_selector = selector("img[src]")?;
+        let mut ignored_decorative_images = 0;
         let images: Vec<_> = root
             .select(&image_selector)
-            .enumerate()
-            .filter_map(|(index, element)| {
+            .filter_map(|element| {
                 let source = element.value().attr("src")?;
                 let source_url = base_url.join(source).ok()?.to_string();
+                let alt = optional_text(element.value().attr("alt"));
+                let title = optional_text(element.value().attr("title"));
+                let caption = image_caption(element);
+                let width = numeric_attribute(element, "width");
+                let height = numeric_attribute(element, "height");
+                if is_decorative_image(
+                    element,
+                    alt.as_deref(),
+                    title.as_deref(),
+                    caption.as_deref(),
+                ) {
+                    ignored_decorative_images += 1;
+                    return None;
+                }
                 Some(ArticleImage {
-                    id: format!("image-{}", index + 1),
+                    id: String::new(),
                     original_url: source.into(),
                     source_url,
-                    alt: optional_text(element.value().attr("alt")),
-                    title: optional_text(element.value().attr("title")),
-                    caption: image_caption(element),
-                    width: numeric_attribute(element, "width"),
-                    height: numeric_attribute(element, "height"),
+                    alt,
+                    title,
+                    caption,
+                    width,
+                    height,
                     srcset_candidates: srcset_candidates(element, &base_url),
                     capture_status: ImageCaptureStatus::Pending,
                     artifact_id: None,
@@ -305,6 +335,11 @@ impl ArticleIngestionService {
                     byte_length: None,
                     error: None,
                 })
+            })
+            .enumerate()
+            .map(|(index, mut image)| {
+                image.id = format!("image-{}", index + 1);
+                image
             })
             .collect();
         let title = first_text(root, "h1")?.or_else(|| {
@@ -319,7 +354,14 @@ impl ArticleIngestionService {
                 "no readable article blocks were found".into(),
             ));
         }
-        let diagnostics = extraction_diagnostics(title.as_deref(), &blocks, images.len());
+        let diagnostics = extraction_diagnostics(
+            title.as_deref(),
+            &blocks,
+            images.len(),
+            selected_article_root,
+            pruned_boilerplate,
+            ignored_decorative_images,
+        );
         Ok(NormalizedArticle {
             schema_version: ARTICLE_SCHEMA_VERSION.into(),
             canonical_url: base_url.to_string(),
@@ -612,7 +654,14 @@ fn redirect_target(base: &Url, response: &Response) -> Result<Url, IngestionErro
 
 fn select_root(document: &Html) -> Result<ElementRef<'_>, IngestionError> {
     if let Some(root) = document
-        .select(&selector("article,main")?)
+        .select(&selector("article")?)
+        .max_by_key(|candidate| readability_score(*candidate))
+        .filter(|candidate| readability_score(*candidate) >= 160)
+    {
+        return Ok(root);
+    }
+    if let Some(root) = document
+        .select(&selector("main")?)
         .max_by_key(|candidate| readability_score(*candidate))
     {
         return Ok(root);
@@ -645,7 +694,14 @@ fn article_block(
     {
         return Ok(None);
     }
-    let text = element_text(element);
+    if tag == "svg" && !is_meaningful_diagram(element) {
+        return Ok(None);
+    }
+    let text = if tag == "svg" {
+        diagram_text(element)
+    } else {
+        element_text(element)
+    };
     if text.is_empty() {
         return Ok(None);
     }
@@ -683,6 +739,7 @@ fn article_block(
             }
         }
         "blockquote" => ArticleBlock::Quote { id, text },
+        "svg" => ArticleBlock::Diagram { id, text },
         _ => return Ok(None),
     };
     Ok(Some(block))
@@ -717,7 +774,84 @@ fn optional_text(value: Option<&str>) -> Option<String> {
 }
 
 fn numeric_attribute(element: ElementRef<'_>, name: &str) -> Option<u32> {
-    element.value().attr(name)?.parse().ok()
+    element
+        .value()
+        .attr(name)?
+        .trim_end_matches("px")
+        .parse()
+        .ok()
+}
+
+fn is_decorative_image(
+    element: ElementRef<'_>,
+    alt: Option<&str>,
+    title: Option<&str>,
+    caption: Option<&str>,
+) -> bool {
+    let width = numeric_attribute(element, "width");
+    let height = numeric_attribute(element, "height");
+    let explicitly_small =
+        width.is_some_and(|value| value <= 64) && height.is_some_and(|value| value <= 64);
+    let class_signals_decoration = element
+        .value()
+        .attr("class")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .any(|class| {
+            ["avatar", "icon", "logo", "emoji", "badge"]
+                .iter()
+                .any(|signal| class.contains(signal))
+        });
+    (explicitly_small || class_signals_decoration)
+        && alt.is_none()
+        && title.is_none()
+        && caption.is_none()
+}
+
+fn is_meaningful_diagram(element: ElementRef<'_>) -> bool {
+    let text = diagram_text(element);
+    if numeric_attribute(element, "width").is_some_and(|value| value <= 64)
+        && numeric_attribute(element, "height").is_some_and(|value| value <= 64)
+    {
+        return false;
+    }
+    text.len() >= 20
+}
+
+fn diagram_text(element: ElementRef<'_>) -> String {
+    let accessible_text = element
+        .value()
+        .attr("aria-label")
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let visible_text = element_text(element);
+    match (accessible_text, visible_text.is_empty()) {
+        (Some(accessible), false) if accessible != visible_text => {
+            format!("{accessible} Labels: {visible_text}")
+        }
+        (Some(accessible), _) => accessible.to_owned(),
+        (None, _) => visible_text,
+    }
+}
+
+fn is_trailing_boilerplate_boundary(tag: &str, text: &str) -> bool {
+    matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+        && matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "related posts"
+                | "related articles"
+                | "recommended reading"
+                | "more from this author"
+                | "you may also like"
+        )
+}
+
+fn is_article_metadata(tag: &str, text: &str) -> bool {
+    tag == "p"
+        && ["filed under:", "author:"]
+            .iter()
+            .any(|prefix| text.trim().to_ascii_lowercase().starts_with(prefix))
 }
 
 fn image_caption(element: ElementRef<'_>) -> Option<String> {
@@ -767,6 +901,9 @@ fn extraction_diagnostics(
     title: Option<&str>,
     blocks: &[ArticleBlock],
     image_count: usize,
+    selected_article_root: bool,
+    pruned_boilerplate: bool,
+    ignored_decorative_images: usize,
 ) -> ExtractionDiagnostics {
     let text = blocks
         .iter()
@@ -774,19 +911,30 @@ fn extraction_diagnostics(
             ArticleBlock::Heading { text, .. }
             | ArticleBlock::Paragraph { text, .. }
             | ArticleBlock::Code { text, .. }
-            | ArticleBlock::Quote { text, .. } => text.as_str(),
+            | ArticleBlock::Quote { text, .. }
+            | ArticleBlock::Diagram { text, .. } => text.as_str(),
             ArticleBlock::List { .. } => "",
         })
         .collect::<Vec<_>>()
         .join(" ");
     let word_count = text.split_whitespace().count();
-    let mut confidence = 20_u8;
+    let diagram_count = blocks
+        .iter()
+        .filter(|block| matches!(block, ArticleBlock::Diagram { .. }))
+        .count();
+    let mut confidence = 20_i16;
     if title.is_some() {
         confidence += 25;
     }
-    confidence += (blocks.len().min(3) * 10) as u8;
-    if text.len() >= 80 {
-        confidence += 25;
+    confidence += (blocks.len().min(3) * 10) as i16;
+    if word_count >= 40 {
+        confidence += 15;
+    }
+    if word_count >= 250 {
+        confidence += 10;
+    }
+    if selected_article_root {
+        confidence += 5;
     }
     let mut warnings = Vec::new();
     if title.is_none() {
@@ -795,11 +943,27 @@ fn extraction_diagnostics(
     if word_count < 40 {
         warnings.push("Extracted article text is unusually short.".into());
     }
+    if !selected_article_root {
+        warnings
+            .push("No substantial article element was found; extraction used main or body.".into());
+        confidence -= 10;
+    }
+    if pruned_boilerplate {
+        warnings
+            .push("Trailing article metadata or related-content boilerplate was removed.".into());
+        confidence -= 5;
+    }
+    if ignored_decorative_images > 0 {
+        warnings.push(format!(
+            "{ignored_decorative_images} decorative image(s) were ignored."
+        ));
+    }
     ExtractionDiagnostics {
-        confidence: confidence.min(100),
+        confidence: confidence.clamp(0, 95) as u8,
         word_count,
         block_count: blocks.len(),
         image_count,
+        diagram_count,
         warnings,
     }
 }

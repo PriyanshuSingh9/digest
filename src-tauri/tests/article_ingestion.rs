@@ -109,6 +109,81 @@ fn extraction_selects_the_most_substantial_article_candidate() {
 }
 
 #[test]
+fn extraction_prefers_article_over_a_larger_main_and_prunes_related_content() {
+    let html = br#"
+        <html><body><main>
+          <article>
+            <h1>Storage architecture</h1>
+            <p>The write-ahead log is the durable source of truth for every write.</p>
+            <svg class="architecture-diagram" viewBox="0 0 800 400"
+                 aria-label="Writes flow from the API through the WAL to object storage">
+              <title>WAL replication path</title>
+              <text>API</text><text>WAL</text><text>Object storage</text>
+            </svg>
+            <h2>Conclusion</h2>
+            <p>Separating durable storage from compute allows independent scaling.</p>
+            <p>Filed under: research</p>
+            <p>Author: Example Author</p>
+            <h2>Related posts</h2>
+            <p>This unrelated post is deliberately long enough to make main win a naive score.</p>
+          </article>
+          <aside>
+            <img src="/avatar.png" width="24" height="24">
+            <p>More unrelated sidebar content that does not belong to the article.</p>
+          </aside>
+        </main></body></html>
+    "#;
+
+    let article = ArticleIngestionService::extract("https://example.com/story", html)
+        .expect("extract article without surrounding main content");
+    let serialized = serde_json::to_string(&article.blocks).expect("serialize blocks");
+
+    assert!(!serialized.contains("Related posts"));
+    assert!(!serialized.contains("unrelated post"));
+    assert!(!serialized.contains("Filed under"));
+    assert!(!serialized.contains("Example Author"));
+    assert!(article.images.is_empty(), "tiny avatar must be ignored");
+    assert!(article.blocks.iter().any(|block| matches!(
+        block,
+        ArticleBlock::Diagram { text, .. }
+            if text.contains("WAL replication path")
+                && text.contains("Object storage")
+    )));
+    assert!(article
+        .diagnostics
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("boilerplate")));
+    assert!(article.diagnostics.confidence < 100);
+}
+
+#[test]
+fn extraction_ignores_decorative_svg_icons_but_keeps_meaningful_diagrams() {
+    let html = br#"
+        <article>
+          <h1>Queues</h1>
+          <p>A durable queue separates producers from consumers during load spikes.</p>
+          <svg width="16" height="16"><path d="M0 0h16v16z"/></svg>
+          <svg viewBox="0 0 900 500" role="img">
+            <title>Queue processing topology</title>
+            <desc>Producer sends work to a durable queue before consumers process it.</desc>
+            <text>Producer</text><text>Queue</text><text>Consumer</text>
+          </svg>
+        </article>
+    "#;
+
+    let article = ArticleIngestionService::extract("https://example.com/queues", html)
+        .expect("extract meaningful diagram");
+    let diagrams: Vec<_> = article
+        .blocks
+        .iter()
+        .filter(|block| matches!(block, ArticleBlock::Diagram { .. }))
+        .collect();
+
+    assert_eq!(diagrams.len(), 1);
+}
+
+#[test]
 fn captured_article_persists_raw_source_and_normalized_artifacts() {
     let directory = tempfile::tempdir().expect("create temporary data directory");
     let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));

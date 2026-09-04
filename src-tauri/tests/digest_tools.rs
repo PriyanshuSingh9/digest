@@ -1,5 +1,6 @@
 use digest_lib::{
-    ArticleIngestionService, DigestService, DigestTools, NarrationSegmentDraft, PresentationType,
+    AnalysisClaim, ArticleIngestionService, ClaimKind, DigestService, DigestTools,
+    NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType,
     ReadArtifactInput, WriteAnalysisInput, WriteNarrationPlanInput,
 };
 use std::sync::Arc;
@@ -8,13 +9,33 @@ use std::sync::Arc;
 fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
     let directory = tempfile::tempdir().expect("create temporary data directory");
     let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+    let article = ArticleIngestionService::new(service.clone())
+        .persist_response(
+            "job-1",
+            "https://example.com/article",
+            "https://example.com/article",
+            200,
+            Some("text/html"),
+            b"<article><h1>Durable queues</h1><p>A durable queue separates producers from consumers.</p></article>",
+        )
+        .expect("persist normalized article")
+        .article;
     let tools = DigestTools::new(service);
 
     let written = tools
         .write_analysis(WriteAnalysisInput {
             job_id: "job-1".into(),
-            article_id: "article-1".into(),
-            summary: "A tool-written analysis.".into(),
+            article_id: article.artifact_id,
+            central_argument: AnalysisClaim {
+                text: "Durable queues decouple producers and consumers.".into(),
+                source_blocks: vec!["block-2".into()],
+                kind: ClaimKind::SourceDerived,
+            },
+            learning_points: vec![AnalysisClaim {
+                text: "Independent components can tolerate load spikes.".into(),
+                source_blocks: vec!["block-2".into()],
+                kind: ClaimKind::Inference,
+            }],
         })
         .expect("write analysis through tool facade");
     let read = tools
@@ -24,7 +45,15 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
         .expect("read analysis through tool facade");
 
     assert_eq!(read.artifact.artifact_id, written.artifact_id);
-    assert_eq!(read.artifact.payload["summary"], "A tool-written analysis.");
+    assert_eq!(read.artifact.payload["schemaVersion"], "1.1");
+    assert_eq!(
+        read.artifact.payload["centralArgument"]["sourceBlocks"][0],
+        "block-2"
+    );
+    assert_eq!(
+        read.artifact.payload["learningPoints"][0]["kind"],
+        "inference"
+    );
 }
 
 #[test]
@@ -54,11 +83,13 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 tts_text: "eye-oh uring submits work asynchronously.".into(),
                 source_blocks: vec!["block-1".into()],
                 presentation_type: PresentationType::ArticleText,
+                importance: NarrationImportance::Core,
+                intent: NarrationIntent::Introduction,
             }],
         })
         .expect("write narration plan");
 
-    assert_eq!(written.payload["schemaVersion"], "1.0");
+    assert_eq!(written.payload["schemaVersion"], "1.1");
     assert_eq!(
         written.payload["segments"][0]["displayText"],
         "io_uring submits work asynchronously."
@@ -69,6 +100,9 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
     );
     assert_eq!(written.payload["segments"][0]["id"], "segment-1");
     assert_eq!(written.payload["segments"][0]["sourceBlocks"][0], "block-1");
+    assert_eq!(written.payload["segments"][0]["importance"], "core");
+    assert_eq!(written.payload["segments"][0]["intent"], "introduction");
+    assert_eq!(written.payload["diagnostics"]["coreSegmentCount"], 1);
 
     let error = tools
         .write_narration_plan(WriteNarrationPlanInput {
@@ -80,6 +114,8 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 tts_text: "Invented source.".into(),
                 source_blocks: vec!["block-99".into()],
                 presentation_type: PresentationType::ArticleText,
+                importance: NarrationImportance::Supporting,
+                intent: NarrationIntent::Explanation,
             }],
         })
         .expect_err("unknown source blocks must be rejected");
@@ -101,7 +137,9 @@ fn narration_schema_publishes_supported_presentation_types() {
             "displayText": "Display",
             "ttsText": "Spoken",
             "sourceBlocks": ["block-1"],
-            "presentationType": "narrative"
+            "presentationType": "narrative",
+            "importance": "core",
+            "intent": "explanation"
         }]
     }))
     .expect_err("unsupported presentation type must fail at the tool boundary");

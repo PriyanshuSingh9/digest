@@ -53,6 +53,40 @@ fn identical_analysis_is_content_addressed_and_idempotent() {
 }
 
 #[test]
+fn latest_artifact_returns_the_last_artifact_of_the_requested_kind() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = DigestService::open(directory.path()).expect("open Digest service");
+    let first = service
+        .write_analysis(AnalysisDraft {
+            job_id: "job-1".into(),
+            article_id: "article-1".into(),
+            summary: "First analysis.".into(),
+        })
+        .expect("persist first analysis");
+    let second = service
+        .write_analysis(AnalysisDraft {
+            job_id: "job-1".into(),
+            article_id: "article-1".into(),
+            summary: "Second analysis.".into(),
+        })
+        .expect("persist second analysis");
+
+    assert_ne!(first.artifact_id, second.artifact_id);
+    assert_eq!(
+        service
+            .latest_artifact("job-1", ArtifactKind::Analysis)
+            .expect("query latest")
+            .expect("latest analysis")
+            .artifact_id,
+        second.artifact_id
+    );
+    assert!(service
+        .latest_artifact("job-1", ArtifactKind::NarrationPlan)
+        .expect("query absent kind")
+        .is_none());
+}
+
+#[test]
 fn canonical_agent_events_are_ordered_and_job_scoped() {
     let directory = tempfile::tempdir().expect("create temporary data directory");
     let service = DigestService::open(directory.path()).expect("open Digest service");

@@ -1,6 +1,7 @@
 use crate::{
     AcpClient, AgentEvent, AgentProvider, AgentRunRequest, AgentRunResult, ArticleIngestionService,
-    ArtifactEnvelope, DigestService, McpLaunchSpec, PermissionPolicy, RunAttempt, RunSummary,
+    ArtifactEnvelope, ArtifactKind, DigestService, McpLaunchSpec, PermissionPolicy, RunAttempt,
+    RunSummary,
 };
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
@@ -22,6 +23,8 @@ pub struct StartAgentRun {
     pub prompt: String,
     #[serde(default)]
     pub allow_once_permissions: bool,
+    #[serde(default)]
+    pub refresh_source: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,10 +84,24 @@ pub async fn start_agent_run(
     state: State<'_, HostState>,
     input: StartAgentRun,
 ) -> Result<AgentRunResult, String> {
-    let ingestion = ArticleIngestionService::new(Arc::clone(&state.service))
-        .ingest_url(&input.job_id, &input.article_url)
-        .await
-        .map_err(|error| error.to_string())?;
+    let article = if input.refresh_source {
+        None
+    } else {
+        state
+            .service
+            .latest_artifact(&input.job_id, ArtifactKind::NormalizedArticle)
+            .map_err(|error| error.to_string())?
+    };
+    let article = match article {
+        Some(article) => article,
+        None => {
+            ArticleIngestionService::new(Arc::clone(&state.service))
+                .ingest_url(&input.job_id, &input.article_url)
+                .await
+                .map_err(|error| error.to_string())?
+                .article
+        }
+    };
     let digest_mcp = McpLaunchSpec::new(state.executable.clone(), state.data_dir.clone())
         .map_err(|error| error.to_string())?
         .with_prefix_args(vec!["--digest-mcp".into()]);
@@ -94,10 +111,13 @@ pub async fn start_agent_run(
                 "The active Digest job ID is `{}`. Digest already captured and normalized the \
                  article. Read normalized article artifact `{}` with Digest MCP instead of \
                  fetching the URL yourself. Use that artifact ID as the article ID when writing \
-                 analysis. After analysis, call write_narration_plan exactly once with concise, \
-                 source-grounded segments. Keep displayText faithful to the source and use ttsText \
-                 only for pronunciation normalization.\n\n{}",
-                input.job_id, ingestion.article.artifact_id, input.prompt
+                 analysis. In write_analysis, cite source block IDs for the central argument and \
+                 every learning point, and mark any inference explicitly. After analysis, call \
+                 write_narration_plan exactly once with concise, source-grounded segments. Label \
+                 each segment's learning intent and importance. Keep displayText faithful to the \
+                 source. Use ttsText only for pronunciation normalization; preserve established \
+                 acronyms and technical names unless their spoken form is known to need changing.\n\n{}",
+                input.job_id, article.artifact_id, input.prompt
             ),
             job_id: input.job_id,
             provider: input.provider,

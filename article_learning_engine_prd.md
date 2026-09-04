@@ -2385,19 +2385,21 @@ The first Phase 1 increment now provides:
 - article URL input in the Tauri control plane,
 - bounded native HTTP capture with manual redirect handling and rejection of private or loopback targets,
 - immutable raw response objects plus versioned source-capture envelopes,
-- a normalized article artifact containing stable block IDs, headings, paragraphs, code blocks, lists, quotes, and resolved image references,
-- main-content candidate scoring plus persisted confidence, coverage counts, and extraction warnings,
-- source image metadata including captions, dimensions, and resolved `srcset` candidates,
+- a normalized article artifact containing stable block IDs, headings, paragraphs, code blocks, lists, quotes, safe text representations of meaningful inline SVG diagrams, and resolved image references,
+- article-first main-content selection, trailing related-content and metadata pruning, and persisted confidence, coverage counts, and extraction warnings,
+- source image metadata including captions, dimensions, and resolved `srcset` candidates, with tiny unlabeled decorative media excluded,
 - bounded image localization with byte-derived MIME detection, immutable image artifacts, and explicit partial-failure records,
 - an `ingest_article` MCP tool backed by the same shell-independent Rust application service,
-- a `write_narration_plan` MCP tool that keeps display text and TTS text separate and requires source-block provenance,
+- a structured `write_analysis` MCP contract that requires source-block provenance and distinguishes source-derived claims from inference,
+- a `write_narration_plan` MCP tool that keeps display text and TTS text separate, requires source-block provenance, labels segment intent and importance, and emits coverage diagnostics,
 - machine-readable narration presentation types in the MCP schema so agents can correct invalid tool arguments,
 - durable agent attempts with terminal status and provider-session linkage,
 - a five-minute ACP run deadline and host-startup recovery of attempts interrupted by a previous process,
 - raw canonical agent events plus a coalesced presentation-event projection,
+- retry behavior that reuses a job's latest immutable normalized article by default while retaining an explicit fresh-capture option,
 - a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, capture-quality summaries, and media-localization summaries.
 
-This checkpoint does **not** complete Phase 1. The next quality slice must turn narration plans into segmented audio and timing artifacts, define the playable manifest, integrate Kokoro as the primary local TTS provider, and render synchronized playback. Current readability scoring and media selection are intentionally conservative first passes; richer boilerplate removal, responsive-candidate selection, Chromium fallback, a fixture corpus, DNS-rebinding defenses, and format-specific media decoding limits remain Phase 2 work.
+This checkpoint does **not** complete Phase 1. The next quality slice must turn narration plans into segmented audio and timing artifacts, define the playable manifest, integrate Kokoro as the primary local TTS provider, and render synchronized playback. Current readability scoring, boilerplate rules, and media selection are conservative first passes; responsive-candidate selection, Chromium fallback, a benchmark fixture corpus, DNS-rebinding defenses, and format-specific media decoding limits remain Phase 2 work.
 
 ---
 

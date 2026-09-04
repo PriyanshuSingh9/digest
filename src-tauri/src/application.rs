@@ -439,6 +439,28 @@ impl DigestService {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn latest_artifact(
+        &self,
+        job_id: &str,
+        kind: ArtifactKind,
+    ) -> Result<Option<ArtifactEnvelope>, DigestError> {
+        require_non_empty("jobId", job_id)?;
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT artifact_id, schema_version, job_id, kind, content_hash, created_at_ms,
+                        payload_json
+                 FROM artifacts
+                 WHERE job_id = ?1 AND kind = ?2
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                params![job_id, kind.as_str()],
+                artifact_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn record_agent_event(&self, event: NewAgentEvent) -> Result<AgentEvent, DigestError> {
         require_non_empty("jobId", &event.job_id)?;
         require_non_empty("sessionId", &event.session_id)?;
