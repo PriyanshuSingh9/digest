@@ -101,9 +101,10 @@ pub struct NarrationSegmentDraft {
     pub presentation_type: PresentationType,
     pub importance: NarrationImportance,
     pub intent: NarrationIntent,
+    pub provenance: ClaimKind,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PresentationType {
     ArticleText,
@@ -129,6 +130,7 @@ pub enum NarrationIntent {
     Explanation,
     Example,
     Comparison,
+    Quantification,
     Takeaway,
 }
 
@@ -239,11 +241,35 @@ impl DigestTools {
             ));
         }
         let source_blocks = source_block_ids(&article);
+        let diagram_blocks: HashSet<&str> = article
+            .payload
+            .get("blocks")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|block| {
+                block.get("kind").and_then(serde_json::Value::as_str) == Some("diagram")
+            })
+            .filter_map(|block| block.get("id").and_then(serde_json::Value::as_str))
+            .collect();
         let referenced_blocks: HashSet<String> = input
             .segments
             .iter()
             .flat_map(|segment| segment.source_blocks.iter().cloned())
             .collect();
+        let presented_diagram_blocks: HashSet<String> = input
+            .segments
+            .iter()
+            .filter(|segment| segment.presentation_type == PresentationType::Diagram)
+            .flat_map(|segment| segment.source_blocks.iter())
+            .filter(|source_block| diagram_blocks.contains(source_block.as_str()))
+            .cloned()
+            .collect();
+        if !diagram_blocks.is_empty() && presented_diagram_blocks.is_empty() {
+            return Err(DigestError::InvalidInput(
+                "narration plan must present at least one meaningful source diagram".into(),
+            ));
+        }
         let core_segment_count = input
             .segments
             .iter()
@@ -253,6 +279,11 @@ impl DigestTools {
             0
         } else {
             referenced_blocks.len() * 100 / source_blocks.len()
+        };
+        let diagram_coverage_percent = if diagram_blocks.is_empty() {
+            100
+        } else {
+            presented_diagram_blocks.len() * 100 / diagram_blocks.len()
         };
         let mut segments = Vec::with_capacity(input.segments.len());
         for (index, segment) in input.segments.into_iter().enumerate() {
@@ -275,12 +306,23 @@ impl DigestTools {
                     index + 1
                 )));
             }
+            if segment.presentation_type == PresentationType::Diagram
+                && !segment
+                    .source_blocks
+                    .iter()
+                    .any(|source_block| diagram_blocks.contains(source_block.as_str()))
+            {
+                return Err(DigestError::InvalidInput(format!(
+                    "narration segment {} uses diagram presentation without a diagram source block",
+                    index + 1
+                )));
+            }
             segments.push(serde_json::json!({
                 "id": format!("segment-{}", index + 1),
                 "displayText": segment.display_text,
                 "ttsText": segment.tts_text,
                 "sourceBlocks": segment.source_blocks,
-                "provenance": {"type": "source_derived"},
+                "provenance": {"type": segment.provenance},
                 "presentation": {"type": segment.presentation_type},
                 "importance": segment.importance,
                 "intent": segment.intent,
@@ -290,7 +332,7 @@ impl DigestTools {
             &input.job_id,
             crate::ArtifactKind::NarrationPlan,
             serde_json::json!({
-                "schemaVersion": "1.1",
+                "schemaVersion": "1.2",
                 "articleId": input.article_id,
                 "title": input.title,
                 "segments": segments,
@@ -299,6 +341,9 @@ impl DigestTools {
                     "sourceBlockCount": source_blocks.len(),
                     "sourceCoveragePercent": source_coverage_percent,
                     "coreSegmentCount": core_segment_count,
+                    "diagramBlockCount": diagram_blocks.len(),
+                    "referencedDiagramCount": presented_diagram_blocks.len(),
+                    "diagramCoveragePercent": diagram_coverage_percent,
                 },
             }),
         )

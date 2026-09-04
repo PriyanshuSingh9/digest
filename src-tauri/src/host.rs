@@ -116,9 +116,11 @@ pub async fn start_agent_run(
                  source block IDs for the central argument and every finding, and mark AI inference \
                  or explanation explicitly. After analysis, call \
                  write_narration_plan exactly once with concise, source-grounded segments. Label \
-                 each segment's learning intent and importance. Keep displayText faithful to the \
-                 source. Use ttsText only for pronunciation normalization; preserve established \
-                 acronyms and technical names unless their spoken form is known to need changing.\n\n{}",
+                 each segment's learning intent, importance, and provenance. When the article has \
+                 diagram blocks, present at least one meaningful diagram and cite its diagram block \
+                 in that segment. Keep displayText faithful to the source. Use ttsText only for \
+                 pronunciation normalization; preserve established acronyms and technical names \
+                 unless their spoken form is known to need changing.\n\n{}",
                 input.job_id, article.artifact_id, input.prompt
             ),
             job_id: input.job_id,

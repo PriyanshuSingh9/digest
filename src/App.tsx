@@ -57,6 +57,14 @@ type RunSummary = {
   artifactCount: number;
   eventCount: number;
 };
+type RunMetrics = {
+  status: RunAttempt["status"];
+  findingCount: number;
+  segmentCount: number;
+  sourceCoveragePercent: number | null;
+  referencedDiagramCount: number;
+  diagramBlockCount: number;
+};
 
 const EMPTY_SNAPSHOT: RunSnapshot = { attempts: [], events: [], artifacts: [] };
 const freshJobId = () => `evaluation-${crypto.randomUUID().slice(0, 8)}`;
@@ -65,6 +73,12 @@ const eventLabel = (kind: string) =>
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+const latestArtifact = (artifacts: Artifact[], kind: string) =>
+  [...artifacts].reverse().find((artifact) => artifact.kind === kind);
+const numericField = (
+  value: Record<string, unknown> | undefined,
+  key: string,
+) => (typeof value?.[key] === "number" ? value[key] as number : null);
 
 function conciseMessage(event: AgentEvent) {
   if (!event.message.startsWith("{")) return event.message;
@@ -106,15 +120,45 @@ function App() {
     [selectedArtifact, snapshot.artifacts],
   );
   const articleQuality = useMemo(() => {
-    const article = [...snapshot.artifacts].reverse().find(
-      (artifact) => artifact.kind === "normalized_article",
-    );
+    const article = latestArtifact(snapshot.artifacts, "normalized_article");
     if (!article || !article.payload.diagnostics) return null;
     return {
       diagnostics: article.payload.diagnostics as ExtractionDiagnostics,
       images: (article.payload.images ?? []) as ArticleImage[],
     };
   }, [snapshot.artifacts]);
+  const runMetrics = useMemo<RunMetrics | null>(() => {
+    const attempt = snapshot.attempts[snapshot.attempts.length - 1];
+    if (!attempt) return null;
+    const article = latestArtifact(snapshot.artifacts, "normalized_article");
+    const analysis = latestArtifact(snapshot.artifacts, "analysis");
+    const narration = latestArtifact(snapshot.artifacts, "narration_plan");
+    const articleDiagnostics = article?.payload.diagnostics as
+      | Record<string, unknown>
+      | undefined;
+    const narrationDiagnostics = narration?.payload.diagnostics as
+      | Record<string, unknown>
+      | undefined;
+    return {
+      status: attempt.status,
+      findingCount: Array.isArray(analysis?.payload.findings)
+        ? analysis.payload.findings.length
+        : 0,
+      segmentCount: Array.isArray(narration?.payload.segments)
+        ? narration.payload.segments.length
+        : 0,
+      sourceCoveragePercent: numericField(
+        narrationDiagnostics,
+        "sourceCoveragePercent",
+      ),
+      referencedDiagramCount:
+        numericField(narrationDiagnostics, "referencedDiagramCount") ?? 0,
+      diagramBlockCount:
+        numericField(narrationDiagnostics, "diagramBlockCount") ??
+        numericField(articleDiagnostics, "diagramCount") ??
+        0,
+    };
+  }, [snapshot]);
 
   async function refreshSnapshot(id = jobId) {
     if (!id.trim()) return;
@@ -241,10 +285,25 @@ function App() {
             every durable artifact the agent creates through Digest MCP.
           </p>
         </div>
-        {result && (
+        {(runMetrics || result) && (
           <div className="completion-state" role="status">
-            <span className="status-dot ready" />
-            Session ended · {eventLabel(result.stopReason)}
+            <span
+              className={`status-dot ${
+                runMetrics?.status === "completed" ? "ready" : ""
+              }`}
+            />
+            {runMetrics ? (
+              <span>
+                {eventLabel(runMetrics.status)} · {runMetrics.findingCount} findings
+                {" · "}{runMetrics.segmentCount} segments
+                {runMetrics.sourceCoveragePercent !== null &&
+                  ` · ${runMetrics.sourceCoveragePercent}% source coverage`}
+                {runMetrics.diagramBlockCount > 0 &&
+                  ` · ${runMetrics.referencedDiagramCount}/${runMetrics.diagramBlockCount} diagrams`}
+              </span>
+            ) : (
+              <>Session ended · {eventLabel(result!.stopReason)}</>
+            )}
           </div>
         )}
       </section>

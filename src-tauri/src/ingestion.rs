@@ -848,10 +848,13 @@ fn is_trailing_boilerplate_boundary(tag: &str, text: &str) -> bool {
 }
 
 fn is_article_metadata(tag: &str, text: &str) -> bool {
-    tag == "p"
-        && ["filed under:", "author:"]
-            .iter()
-            .any(|prefix| text.trim().to_ascii_lowercase().starts_with(prefix))
+    if tag != "p" {
+        return false;
+    }
+    text.trim()
+        .to_ascii_lowercase()
+        .split_once(':')
+        .is_some_and(|(label, _)| matches!(label.trim(), "filed under" | "author"))
 }
 
 fn image_caption(element: ElementRef<'_>) -> Option<String> {
@@ -936,6 +939,7 @@ fn extraction_diagnostics(
     if selected_article_root {
         confidence += 5;
     }
+    confidence = confidence.min(95);
     let mut warnings = Vec::new();
     if title.is_none() {
         warnings.push("No article title was found.".into());

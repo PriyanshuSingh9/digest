@@ -2391,13 +2391,13 @@ The first Phase 1 increment now provides:
 - bounded image localization with byte-derived MIME detection, immutable image artifacts, and explicit partial-failure records,
 - an `ingest_article` MCP tool backed by the same shell-independent Rust application service,
 - a structured `write_analysis` MCP contract that requires source-block provenance and distinguishes source-derived claims from inference,
-- a `write_narration_plan` MCP tool that keeps display text and TTS text separate, requires source-block provenance, labels segment intent and importance, and emits coverage diagnostics,
+- a `write_narration_plan` MCP tool that keeps display text and TTS text separate, requires explicit segment provenance and source-block provenance, labels segment intent and importance, and emits text and diagram coverage diagnostics,
 - machine-readable narration presentation types in the MCP schema so agents can correct invalid tool arguments,
 - durable agent attempts with terminal status and provider-session linkage,
 - a five-minute ACP run deadline and host-startup recovery of attempts interrupted by a previous process,
 - raw canonical agent events plus a coalesced presentation-event projection,
 - retry behavior that reuses a job's latest immutable normalized article by default while retaining an explicit fresh-capture option,
-- a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, capture-quality summaries, and media-localization summaries.
+- a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, capture-quality summaries, media-localization summaries, and completion statistics computed from durable artifacts rather than agent prose.
 
 This checkpoint does **not** complete Phase 1. The next quality slice must turn narration plans into segmented audio and timing artifacts, define the playable manifest, integrate Kokoro as the primary local TTS provider, and render synchronized playback. Current readability scoring, boilerplate rules, and media selection are conservative first passes; responsive-candidate selection, Chromium fallback, a benchmark fixture corpus, DNS-rebinding defenses, and format-specific media decoding limits remain Phase 2 work.
 

@@ -154,7 +154,7 @@ fn extraction_prefers_article_over_a_larger_main_and_prunes_related_content() {
         .warnings
         .iter()
         .any(|warning| warning.contains("boilerplate")));
-    assert!(article.diagnostics.confidence < 100);
+    assert_eq!(article.diagnostics.confidence, 90);
 }
 
 #[test]
@@ -181,6 +181,24 @@ fn extraction_ignores_decorative_svg_icons_but_keeps_meaningful_diagrams() {
         .collect();
 
     assert_eq!(diagrams.len(), 1);
+}
+
+#[test]
+fn extraction_prunes_metadata_with_whitespace_before_the_colon() {
+    let html = br#"
+        <article>
+          <h1>Storage architecture</h1>
+          <p>A durable log is the source of truth for every acknowledged write.</p>
+          <p>Author : Vicent Marti</p>
+        </article>
+    "#;
+
+    let article = ArticleIngestionService::extract("https://example.com/storage", html)
+        .expect("extract article");
+    let serialized = serde_json::to_string(&article.blocks).expect("serialize blocks");
+
+    assert!(!serialized.contains("Vicent Marti"));
+    assert_eq!(article.diagnostics.confidence, 65);
 }
 
 #[test]

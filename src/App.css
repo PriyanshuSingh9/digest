@@ -61,7 +61,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   color: var(--muted);
   font-size: 0.78rem;
 }
-.host-state, .completion-state { gap: 7px; white-space: nowrap; }
+.host-state { gap: 7px; white-space: nowrap; }
+.completion-state { gap: 7px; line-height: 1.4; text-wrap: pretty; }
 .status-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--quiet); }
 .status-dot.ready { background: var(--primary); }
 
@@ -86,7 +87,13 @@ h3 { margin: 0; font-size: 0.9rem; }
   font-size: 0.9rem;
   line-height: 1.55;
 }
-.completion-state { min-height: 34px; padding: 0 12px; border-radius: 999px; background: var(--surface); }
+.completion-state {
+  min-height: 34px;
+  max-width: 68ch;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
 .error-banner {
   max-width: calc(1440px - 56px);
   margin: 0 auto 18px;
