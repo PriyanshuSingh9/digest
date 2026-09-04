@@ -25,7 +25,7 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
     let written = tools
         .write_analysis(WriteAnalysisInput {
             job_id: "job-1".into(),
-            article_id: article.artifact_id,
+            article_id: article.artifact_id.clone(),
             central_argument: AnalysisClaim {
                 text: "Durable queues decouple producers and consumers.".into(),
                 source_blocks: vec!["block-2".into()],
@@ -54,6 +54,24 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
         read.artifact.payload["learningPoints"][0]["kind"],
         "inference"
     );
+
+    let error = tools
+        .write_analysis(WriteAnalysisInput {
+            job_id: "job-1".into(),
+            article_id: article.artifact_id,
+            central_argument: AnalysisClaim {
+                text: "An unsupported claim.".into(),
+                source_blocks: vec!["block-99".into()],
+                kind: ClaimKind::SourceDerived,
+            },
+            learning_points: vec![AnalysisClaim {
+                text: "A valid point.".into(),
+                source_blocks: vec!["block-1".into()],
+                kind: ClaimKind::SourceDerived,
+            }],
+        })
+        .expect_err("unknown analysis source blocks must be rejected");
+    assert!(error.to_string().contains("block-99"));
 }
 
 #[test]

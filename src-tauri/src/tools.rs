@@ -140,14 +140,7 @@ impl DigestTools {
                 "analysis articleId must reference this job's normalized article".into(),
             ));
         }
-        let source_blocks: HashSet<&str> = article
-            .payload
-            .get("blocks")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|block| block.get("id").and_then(serde_json::Value::as_str))
-            .collect();
+        let source_blocks = source_block_ids(&article);
         validate_analysis_claim("centralArgument", &input.central_argument, &source_blocks)?;
         for (index, claim) in input.learning_points.iter().enumerate() {
             validate_analysis_claim(&format!("learningPoints[{}]", index), claim, &source_blocks)?;
@@ -210,14 +203,7 @@ impl DigestTools {
                 "narration plan articleId must reference this job's normalized article".into(),
             ));
         }
-        let source_blocks: HashSet<&str> = article
-            .payload
-            .get("blocks")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|block| block.get("id").and_then(serde_json::Value::as_str))
-            .collect();
+        let source_blocks = source_block_ids(&article);
         let referenced_blocks: HashSet<String> = input
             .segments
             .iter()
@@ -282,6 +268,17 @@ impl DigestTools {
             }),
         )
     }
+}
+
+fn source_block_ids(article: &ArtifactEnvelope) -> HashSet<&str> {
+    article
+        .payload
+        .get("blocks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block.get("id").and_then(serde_json::Value::as_str))
+        .collect()
 }
 
 fn validate_analysis_claim(
