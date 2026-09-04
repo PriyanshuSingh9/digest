@@ -325,6 +325,22 @@ Complex AI-generated visualizations are optional and must not block the core lea
 
 ---
 
+## 5.10 Accountable Compression
+
+Narration may reorganize and compress an article, but it must not silently turn a full learning experience into a short summary.
+
+For every normalized source block, the workflow agent must explicitly decide to:
+
+1. teach it with appropriate depth,
+2. summarize it while preserving its essential meaning, or
+3. skip it with a recorded rationale.
+
+Related blocks may share one decision, but every block must be accounted for exactly once. Taught and summarized blocks must be cited by narration segments. Every meaningful source diagram must either be presented by a diagram segment or explicitly skipped with a rationale.
+
+The execution layer validates decision completeness and reports taught, summarized, and skipped block counts together with source and narration word counts. These are transparency signals, not model-output limits. V1 does not impose a fixed narration duration, compression ratio, finding count, or segment count.
+
+---
+
 # 6. Target User
 
 The primary user is a technically sophisticated learner who:
@@ -2391,7 +2407,7 @@ The first Phase 1 increment now provides:
 - bounded image localization with byte-derived MIME detection, immutable image artifacts, and explicit partial-failure records,
 - an `ingest_article` MCP tool backed by the same shell-independent Rust application service,
 - a structured `write_analysis` MCP contract that requires source-block provenance and distinguishes source-derived claims from inference,
-- a `write_narration_plan` MCP tool that keeps display text and TTS text separate, requires explicit segment provenance and source-block provenance, labels segment intent and importance, and emits text and diagram coverage diagnostics,
+- a `write_narration_plan` MCP tool that keeps display text and TTS text separate, requires explicit segment provenance and source-block provenance, labels segment intent and importance, requires every source block and diagram to be taught, summarized, or skipped with a rationale, and emits coverage and compression-transparency diagnostics,
 - machine-readable narration presentation types in the MCP schema so agents can correct invalid tool arguments,
 - durable agent attempts with terminal status and provider-session linkage,
 - a five-minute ACP run deadline and host-startup recovery of attempts interrupted by a previous process,

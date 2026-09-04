@@ -62,6 +62,13 @@ type RunMetrics = {
   findingCount: number;
   segmentCount: number;
   sourceCoveragePercent: number | null;
+  accountedBlockCount: number | null;
+  taughtBlockCount: number | null;
+  summarizedBlockCount: number | null;
+  skippedBlockCount: number | null;
+  narrationWordCount: number | null;
+  sourceWordCount: number | null;
+  narrationToSourceWordPercent: number | null;
   referencedDiagramCount: number;
   diagramBlockCount: number;
 };
@@ -150,6 +157,30 @@ function App() {
       sourceCoveragePercent: numericField(
         narrationDiagnostics,
         "sourceCoveragePercent",
+      ),
+      accountedBlockCount: numericField(
+        narrationDiagnostics,
+        "accountedBlockCount",
+      ),
+      taughtBlockCount: numericField(narrationDiagnostics, "taughtBlockCount"),
+      summarizedBlockCount: numericField(
+        narrationDiagnostics,
+        "summarizedBlockCount",
+      ),
+      skippedBlockCount: numericField(
+        narrationDiagnostics,
+        "skippedBlockCount",
+      ),
+      narrationWordCount: numericField(
+        narrationDiagnostics,
+        "narrationWordCount",
+      ),
+      sourceWordCount:
+        numericField(narrationDiagnostics, "sourceWordCount") ??
+        numericField(articleDiagnostics, "wordCount"),
+      narrationToSourceWordPercent: numericField(
+        narrationDiagnostics,
+        "narrationToSourceWordPercent",
       ),
       referencedDiagramCount:
         numericField(narrationDiagnostics, "referencedDiagramCount") ?? 0,
@@ -297,7 +328,12 @@ function App() {
                 {eventLabel(runMetrics.status)} · {runMetrics.findingCount} findings
                 {" · "}{runMetrics.segmentCount} segments
                 {runMetrics.sourceCoveragePercent !== null &&
-                  ` · ${runMetrics.sourceCoveragePercent}% source coverage`}
+                  ` · ${runMetrics.sourceCoveragePercent}% blocks cited`}
+                {runMetrics.accountedBlockCount !== null &&
+                  ` · ${runMetrics.taughtBlockCount} taught, ${runMetrics.summarizedBlockCount} summarized, ${runMetrics.skippedBlockCount} skipped`}
+                {runMetrics.narrationWordCount !== null &&
+                  runMetrics.sourceWordCount !== null &&
+                  ` · ${runMetrics.narrationWordCount.toLocaleString()}/${runMetrics.sourceWordCount.toLocaleString()} words (${runMetrics.narrationToSourceWordPercent}%)`}
                 {runMetrics.diagramBlockCount > 0 &&
                   ` · ${runMetrics.referencedDiagramCount}/${runMetrics.diagramBlockCount} diagrams`}
               </span>

@@ -115,12 +115,16 @@ pub async fn start_agent_run(
                  examples, difficult sections, and visualization opportunities as findings. Cite \
                  source block IDs for the central argument and every finding, and mark AI inference \
                  or explanation explicitly. After analysis, call \
-                 write_narration_plan exactly once with concise, source-grounded segments. Label \
-                 each segment's learning intent, importance, and provenance. When the article has \
-                 diagram blocks, present at least one meaningful diagram and cite its diagram block \
-                 in that segment. Keep displayText faithful to the source. Use ttsText only for \
-                 pronunciation normalization; preserve established acronyms and technical names \
-                 unless their spoken form is known to need changing.\n\n{}",
+                 write_narration_plan with source-grounded segments. Do not optimize for a short \
+                 summary: preserve the depth needed to teach the article. Label each segment's \
+                 learning intent, importance, and provenance. Account for every normalized source \
+                 block exactly once in sourceCoverageDecisions by choosing teach, summarize, or \
+                 skip with a rationale; decisions may group related blocks. Every taught or \
+                 summarized block must be cited by a narration segment. For every diagram block, \
+                 either present it in a diagram segment or explicitly skip it with a rationale. \
+                 Keep displayText faithful to the source. Use ttsText only for pronunciation \
+                 normalization; preserve established acronyms and technical names unless their \
+                 spoken form is known to need changing.\n\n{}",
                 input.job_id, article.artifact_id, input.prompt
             ),
             job_id: input.job_id,

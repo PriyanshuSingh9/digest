@@ -134,6 +134,22 @@ pub enum NarrationIntent {
     Takeaway,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCoverageTreatment {
+    Teach,
+    Summarize,
+    Skip,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCoverageDecision {
+    pub source_blocks: Vec<String>,
+    pub treatment: SourceCoverageTreatment,
+    pub rationale: String,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteNarrationPlanInput {
@@ -141,6 +157,7 @@ pub struct WriteNarrationPlanInput {
     pub article_id: String,
     pub title: String,
     pub segments: Vec<NarrationSegmentDraft>,
+    pub source_coverage_decisions: Vec<SourceCoverageDecision>,
 }
 
 #[derive(Clone)]
@@ -265,11 +282,13 @@ impl DigestTools {
             .filter(|source_block| diagram_blocks.contains(source_block.as_str()))
             .cloned()
             .collect();
-        if !diagram_blocks.is_empty() && presented_diagram_blocks.is_empty() {
-            return Err(DigestError::InvalidInput(
-                "narration plan must present at least one meaningful source diagram".into(),
-            ));
-        }
+        let coverage_counts = validate_source_coverage(
+            &input.source_coverage_decisions,
+            &source_blocks,
+            &diagram_blocks,
+            &referenced_blocks,
+            &presented_diagram_blocks,
+        )?;
         let core_segment_count = input
             .segments
             .iter()
@@ -285,6 +304,21 @@ impl DigestTools {
         } else {
             presented_diagram_blocks.len() * 100 / diagram_blocks.len()
         };
+        let narration_word_count = input
+            .segments
+            .iter()
+            .map(|segment| word_count(&segment.display_text))
+            .sum::<usize>();
+        let source_word_count = article
+            .payload
+            .get("diagnostics")
+            .and_then(|diagnostics| diagnostics.get("wordCount"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default() as usize;
+        let narration_to_source_word_percent = narration_word_count
+            .saturating_mul(100)
+            .checked_div(source_word_count)
+            .unwrap_or_default();
         let mut segments = Vec::with_capacity(input.segments.len());
         for (index, segment) in input.segments.into_iter().enumerate() {
             if segment.display_text.trim().is_empty()
@@ -333,22 +367,108 @@ impl DigestTools {
             &input.job_id,
             crate::ArtifactKind::NarrationPlan,
             serde_json::json!({
-                "schemaVersion": "1.2",
+                "schemaVersion": "1.3",
                 "articleId": input.article_id,
                 "title": input.title,
                 "segments": segments,
+                "sourceCoverageDecisions": input.source_coverage_decisions,
                 "diagnostics": {
                     "referencedBlockCount": referenced_blocks.len(),
                     "sourceBlockCount": source_blocks.len(),
                     "sourceCoveragePercent": source_coverage_percent,
+                    "accountedBlockCount": coverage_counts.accounted,
+                    "taughtBlockCount": coverage_counts.taught,
+                    "summarizedBlockCount": coverage_counts.summarized,
+                    "skippedBlockCount": coverage_counts.skipped,
                     "coreSegmentCount": core_segment_count,
                     "diagramBlockCount": diagram_blocks.len(),
                     "referencedDiagramCount": presented_diagram_blocks.len(),
                     "diagramCoveragePercent": diagram_coverage_percent,
+                    "narrationWordCount": narration_word_count,
+                    "sourceWordCount": source_word_count,
+                    "narrationToSourceWordPercent": narration_to_source_word_percent,
                 },
             }),
         )
     }
+}
+
+#[derive(Default)]
+struct CoverageCounts {
+    accounted: usize,
+    taught: usize,
+    summarized: usize,
+    skipped: usize,
+}
+
+fn validate_source_coverage(
+    decisions: &[SourceCoverageDecision],
+    source_blocks: &HashSet<&str>,
+    diagram_blocks: &HashSet<&str>,
+    referenced_blocks: &HashSet<String>,
+    presented_diagram_blocks: &HashSet<String>,
+) -> Result<CoverageCounts, DigestError> {
+    let mut seen = HashSet::new();
+    let mut counts = CoverageCounts::default();
+    for (index, decision) in decisions.iter().enumerate() {
+        if decision.source_blocks.is_empty() || decision.rationale.trim().is_empty() {
+            return Err(DigestError::InvalidInput(format!(
+                "source coverage decision {} requires sourceBlocks and rationale",
+                index + 1
+            )));
+        }
+        for source_block in &decision.source_blocks {
+            if !source_blocks.contains(source_block.as_str()) {
+                return Err(DigestError::InvalidInput(format!(
+                    "source coverage decision {} references unknown source block {source_block}",
+                    index + 1
+                )));
+            }
+            if !seen.insert(source_block.as_str()) {
+                return Err(DigestError::InvalidInput(format!(
+                    "source block {source_block} has more than one coverage decision"
+                )));
+            }
+            let referenced = referenced_blocks.contains(source_block);
+            match decision.treatment {
+                SourceCoverageTreatment::Teach | SourceCoverageTreatment::Summarize => {
+                    if !referenced {
+                        return Err(DigestError::InvalidInput(format!(
+                            "source block {source_block} is marked {:?} but is not cited by a narration segment",
+                            decision.treatment
+                        )));
+                    }
+                    if diagram_blocks.contains(source_block.as_str())
+                        && !presented_diagram_blocks.contains(source_block)
+                    {
+                        return Err(DigestError::InvalidInput(format!(
+                            "diagram source block {source_block} is selected but is not presented by a diagram segment"
+                        )));
+                    }
+                }
+                SourceCoverageTreatment::Skip if referenced => {
+                    return Err(DigestError::InvalidInput(format!(
+                        "source block {source_block} is marked skip but is cited by a narration segment"
+                    )));
+                }
+                SourceCoverageTreatment::Skip => {}
+            }
+            counts.accounted += 1;
+            match decision.treatment {
+                SourceCoverageTreatment::Teach => counts.taught += 1,
+                SourceCoverageTreatment::Summarize => counts.summarized += 1,
+                SourceCoverageTreatment::Skip => counts.skipped += 1,
+            }
+        }
+    }
+    if seen.len() != source_blocks.len() {
+        return Err(DigestError::InvalidInput(format!(
+            "source coverage decisions account for {} of {} source blocks",
+            seen.len(),
+            source_blocks.len()
+        )));
+    }
+    Ok(counts)
 }
 
 fn source_block_ids(article: &ArtifactEnvelope) -> HashSet<&str> {
@@ -360,6 +480,10 @@ fn source_block_ids(article: &ArtifactEnvelope) -> HashSet<&str> {
         .flatten()
         .filter_map(|block| block.get("id").and_then(serde_json::Value::as_str))
         .collect()
+}
+
+fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
 }
 
 fn validate_analysis_claim(

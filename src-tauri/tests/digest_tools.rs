@@ -1,9 +1,21 @@
 use digest_lib::{
     AnalysisClaim, AnalysisFinding, AnalysisFindingKind, ArticleIngestionService, DigestService,
     DigestTools, NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType,
-    ProvenanceKind, ReadArtifactInput, WriteAnalysisInput, WriteNarrationPlanInput,
+    ProvenanceKind, ReadArtifactInput, SourceCoverageDecision, SourceCoverageTreatment,
+    WriteAnalysisInput, WriteNarrationPlanInput,
 };
 use std::sync::Arc;
+
+fn coverage_decision(
+    source_blocks: &[&str],
+    treatment: SourceCoverageTreatment,
+) -> SourceCoverageDecision {
+    SourceCoverageDecision {
+        source_blocks: source_blocks.iter().map(|block| (*block).into()).collect(),
+        treatment,
+        rationale: "Explicit test coverage decision.".into(),
+    }
+}
 
 #[test]
 fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
@@ -108,10 +120,14 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 intent: NarrationIntent::Introduction,
                 provenance: ProvenanceKind::SourceDerived,
             }],
+            source_coverage_decisions: vec![
+                coverage_decision(&["block-1"], SourceCoverageTreatment::Teach),
+                coverage_decision(&["block-2"], SourceCoverageTreatment::Skip),
+            ],
         })
         .expect("write narration plan");
 
-    assert_eq!(written.payload["schemaVersion"], "1.2");
+    assert_eq!(written.payload["schemaVersion"], "1.3");
     assert_eq!(
         written.payload["segments"][0]["displayText"],
         "io_uring submits work asynchronously."
@@ -129,6 +145,15 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
         "source_derived"
     );
     assert_eq!(written.payload["diagnostics"]["coreSegmentCount"], 1);
+    assert_eq!(written.payload["diagnostics"]["accountedBlockCount"], 2);
+    assert_eq!(written.payload["diagnostics"]["taughtBlockCount"], 1);
+    assert_eq!(written.payload["diagnostics"]["skippedBlockCount"], 1);
+    assert_eq!(written.payload["diagnostics"]["sourceWordCount"], 6);
+    assert_eq!(written.payload["diagnostics"]["narrationWordCount"], 4);
+    assert_eq!(
+        written.payload["diagnostics"]["narrationToSourceWordPercent"],
+        66
+    );
 
     let error = tools
         .write_narration_plan(WriteNarrationPlanInput {
@@ -144,6 +169,10 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 intent: NarrationIntent::Explanation,
                 provenance: ProvenanceKind::AiExplanation,
             }],
+            source_coverage_decisions: vec![coverage_decision(
+                &["block-1", "block-2"],
+                SourceCoverageTreatment::Skip,
+            )],
         })
         .expect_err("unknown source blocks must be rejected");
     assert!(error.to_string().contains("block-99"));
@@ -158,6 +187,18 @@ fn narration_schema_publishes_supported_presentation_types() {
     assert!(encoded_schema.contains("\"concept-card\""));
     assert!(encoded_schema.contains("\"quantification\""));
     assert!(encoded_schema.contains("\"provenance\""));
+    assert!(encoded_schema.contains("\"sourceCoverageDecisions\""));
+    assert!(
+        serde_json::from_value::<WriteNarrationPlanInput>(serde_json::json!({
+            "jobId": "job-1",
+            "articleId": "article-1",
+            "title": "Incomplete plan",
+            "segments": []
+        }))
+        .expect_err("coverage decisions are part of the narration contract")
+        .to_string()
+        .contains("sourceCoverageDecisions")
+    );
     let error = serde_json::from_value::<WriteNarrationPlanInput>(serde_json::json!({
         "jobId": "job-1",
         "articleId": "article-1",
@@ -170,7 +211,8 @@ fn narration_schema_publishes_supported_presentation_types() {
             "importance": "core",
             "intent": "quantification",
             "provenance": "source_derived"
-        }]
+        }],
+        "sourceCoverageDecisions": []
     }))
     .expect_err("unsupported presentation type must fail at the tool boundary");
     assert!(error.to_string().contains("unknown variant"));
@@ -178,7 +220,7 @@ fn narration_schema_publishes_supported_presentation_types() {
 }
 
 #[test]
-fn narration_requires_meaningful_source_diagrams_to_be_presented() {
+fn narration_requires_an_explicit_decision_for_every_source_diagram() {
     let directory = tempfile::tempdir().expect("create temporary data directory");
     let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
     let article = ArticleIngestionService::new(service.clone())
@@ -212,12 +254,29 @@ fn narration_requires_meaningful_source_diagrams_to_be_presented() {
             intent: NarrationIntent::Explanation,
             provenance: ProvenanceKind::SourceDerived,
         }],
+        source_coverage_decisions: vec![
+            coverage_decision(&["block-1"], SourceCoverageTreatment::Skip),
+            coverage_decision(&["block-2"], SourceCoverageTreatment::Summarize),
+        ],
     };
 
     let error = tools
-        .write_narration_plan(text_only)
-        .expect_err("a plan must not ignore all meaningful diagrams");
-    assert!(error.to_string().contains("diagram"));
+        .write_narration_plan(text_only.clone())
+        .expect_err("a plan must not silently ignore a meaningful diagram");
+    assert!(error.to_string().contains("2 of 3 source blocks"));
+
+    let mut diagram_skipped = text_only;
+    diagram_skipped
+        .source_coverage_decisions
+        .push(coverage_decision(
+            &["block-3"],
+            SourceCoverageTreatment::Skip,
+        ));
+    let skipped = tools
+        .write_narration_plan(diagram_skipped)
+        .expect("a diagram may be skipped with an explicit rationale");
+    assert_eq!(skipped.payload["diagnostics"]["referencedDiagramCount"], 0);
+    assert_eq!(skipped.payload["diagnostics"]["skippedBlockCount"], 2);
 
     let written = tools
         .write_narration_plan(WriteNarrationPlanInput {
@@ -233,6 +292,10 @@ fn narration_requires_meaningful_source_diagrams_to_be_presented() {
                 intent: NarrationIntent::Explanation,
                 provenance: ProvenanceKind::SourceDerived,
             }],
+            source_coverage_decisions: vec![
+                coverage_decision(&["block-1", "block-2"], SourceCoverageTreatment::Skip),
+                coverage_decision(&["block-3"], SourceCoverageTreatment::Teach),
+            ],
         })
         .expect("present a source diagram");
 
@@ -241,6 +304,10 @@ fn narration_requires_meaningful_source_diagrams_to_be_presented() {
     assert_eq!(
         written.payload["diagnostics"]["diagramCoveragePercent"],
         100
+    );
+    assert_eq!(
+        written.payload["sourceCoverageDecisions"][1]["treatment"],
+        "teach"
     );
 }
 
@@ -275,6 +342,10 @@ fn narration_rejects_tts_text_that_adds_new_explanation() {
                 intent: NarrationIntent::Explanation,
                 provenance: ProvenanceKind::SourceDerived,
             }],
+            source_coverage_decisions: vec![
+                coverage_decision(&["block-1"], SourceCoverageTreatment::Skip),
+                coverage_decision(&["block-2"], SourceCoverageTreatment::Teach),
+            ],
         })
         .expect_err("ttsText must not add educational content");
 

@@ -22,8 +22,9 @@ pub use mcp::DigestMcpServer;
 pub use tools::{
     AnalysisClaim, AnalysisFinding, AnalysisFindingKind, DigestTools, IngestArticleInput,
     IngestArticleOutput, NarrationImportance, NarrationIntent, NarrationSegmentDraft,
-    PresentationType, ProvenanceKind, ReadArtifactInput, ReadArtifactOutput, WriteAnalysisInput,
-    WriteAnalysisOutput, WriteNarrationPlanInput,
+    PresentationType, ProvenanceKind, ReadArtifactInput, ReadArtifactOutput,
+    SourceCoverageDecision, SourceCoverageTreatment, WriteAnalysisInput, WriteAnalysisOutput,
+    WriteNarrationPlanInput,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
