@@ -43,6 +43,8 @@ pub enum ArtifactKind {
     Analysis,
     SourceCapture,
     NormalizedArticle,
+    ImageAsset,
+    NarrationPlan,
 }
 
 impl ArtifactKind {
@@ -51,6 +53,8 @@ impl ArtifactKind {
             Self::Analysis => "analysis",
             Self::SourceCapture => "source_capture",
             Self::NormalizedArticle => "normalized_article",
+            Self::ImageAsset => "image_asset",
+            Self::NarrationPlan => "narration_plan",
         }
     }
 
@@ -59,6 +63,8 @@ impl ArtifactKind {
             "analysis" => Ok(Self::Analysis),
             "source_capture" => Ok(Self::SourceCapture),
             "normalized_article" => Ok(Self::NormalizedArticle),
+            "image_asset" => Ok(Self::ImageAsset),
+            "narration_plan" => Ok(Self::NarrationPlan),
             other => Err(DigestError::InvalidInput(format!(
                 "unknown artifact kind: {other}"
             ))),

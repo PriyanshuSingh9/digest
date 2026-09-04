@@ -37,6 +37,16 @@ type RunSnapshot = {
 };
 type HostInfo = { dataDir: string; mcpExecutable: string };
 type AgentRunResult = { sessionId: string; stopReason: string };
+type ExtractionDiagnostics = {
+  confidence: number;
+  wordCount: number;
+  blockCount: number;
+  imageCount: number;
+  warnings: string[];
+};
+type ArticleImage = {
+  captureStatus: "pending" | "localized" | "failed";
+};
 
 const EMPTY_SNAPSHOT: RunSnapshot = { attempts: [], events: [], artifacts: [] };
 const freshJobId = () => `evaluation-${crypto.randomUUID().slice(0, 8)}`;
@@ -83,6 +93,16 @@ function App() {
       ) ?? snapshot.artifacts[snapshot.artifacts.length - 1],
     [selectedArtifact, snapshot.artifacts],
   );
+  const articleQuality = useMemo(() => {
+    const article = snapshot.artifacts.find(
+      (artifact) => artifact.kind === "normalized_article",
+    );
+    if (!article || !article.payload.diagnostics) return null;
+    return {
+      diagnostics: article.payload.diagnostics as ExtractionDiagnostics,
+      images: (article.payload.images ?? []) as ArticleImage[],
+    };
+  }, [snapshot.artifacts]);
 
   async function refreshSnapshot(id = jobId) {
     if (!id.trim()) return;
@@ -313,6 +333,48 @@ function App() {
             <div className="artifact-empty">Validated MCP outputs will appear here with their content hash.</div>
           ) : (
             <>
+              {articleQuality && (
+                <section className="quality-summary" aria-labelledby="quality-title">
+                  <div className="quality-heading">
+                    <div>
+                      <h3 id="quality-title">Capture quality</h3>
+                      <span>
+                        {articleQuality.diagnostics.blockCount} blocks ·{" "}
+                        {articleQuality.diagnostics.wordCount} words
+                      </span>
+                    </div>
+                    <strong>{articleQuality.diagnostics.confidence}%</strong>
+                  </div>
+                  <meter
+                    min={0}
+                    max={100}
+                    low={45}
+                    high={75}
+                    optimum={100}
+                    value={articleQuality.diagnostics.confidence}
+                  >
+                    {articleQuality.diagnostics.confidence}%
+                  </meter>
+                  <div className="quality-media">
+                    <span>Media localized</span>
+                    <strong>
+                      {
+                        articleQuality.images.filter(
+                          (image) => image.captureStatus === "localized",
+                        ).length
+                      }
+                      /{articleQuality.images.length}
+                    </strong>
+                  </div>
+                  {articleQuality.diagnostics.warnings.length > 0 && (
+                    <ul className="quality-warnings">
+                      {articleQuality.diagnostics.warnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
               <div className="artifact-tabs" role="list">
                 {snapshot.artifacts.map((artifact) => (
                   <button

@@ -14,13 +14,13 @@ pub use application::{
     DigestService, NewAgentEvent, NewAgentEventKind, RunAttempt, StartRunAttempt,
 };
 pub use ingestion::{
-    ArticleBlock, ArticleImage, ArticleIngestionService, IngestionError, IngestionResult,
-    NormalizedArticle,
+    ArticleBlock, ArticleImage, ArticleIngestionService, ExtractionDiagnostics, ImageCaptureStatus,
+    IngestionError, IngestionResult, NormalizedArticle,
 };
 pub use mcp::DigestMcpServer;
 pub use tools::{
-    DigestTools, IngestArticleInput, IngestArticleOutput, ReadArtifactInput, ReadArtifactOutput,
-    WriteAnalysisInput, WriteAnalysisOutput,
+    DigestTools, IngestArticleInput, IngestArticleOutput, NarrationSegmentDraft, ReadArtifactInput,
+    ReadArtifactOutput, WriteAnalysisInput, WriteAnalysisOutput, WriteNarrationPlanInput,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

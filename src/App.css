@@ -277,6 +277,44 @@ dd {
 }
 
 .artifact-empty { padding: 14px; border-radius: var(--radius-sm); color: var(--muted); background: var(--surface); font-size: 0.76rem; line-height: 1.5; }
+.quality-summary {
+  margin-bottom: 15px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.quality-heading, .quality-media {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.quality-heading h3 { font-size: 0.76rem; }
+.quality-heading span, .quality-media span {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+.quality-heading strong {
+  color: var(--primary);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+}
+.quality-summary meter {
+  width: 100%;
+  height: 5px;
+  margin: 9px 0 10px;
+  display: block;
+  accent-color: var(--primary);
+}
+.quality-media strong { font-size: 0.7rem; }
+.quality-warnings {
+  margin: 10px 0 0;
+  padding: 9px 0 0 17px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
 .artifact-tabs { display: flex; gap: 6px; overflow-x: auto; }
 .artifact-tabs button {
   min-width: 112px;

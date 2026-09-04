@@ -1,6 +1,6 @@
 use crate::{
     DigestTools, IngestArticleInput, IngestArticleOutput, ReadArtifactInput, ReadArtifactOutput,
-    WriteAnalysisInput, WriteAnalysisOutput,
+    WriteAnalysisInput, WriteAnalysisOutput, WriteNarrationPlanInput,
 };
 use rmcp::{
     handler::server::wrapper::{Json, Parameters},
@@ -61,6 +61,20 @@ impl DigestMcpServer {
             .await
             .map(Json)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    }
+
+    #[tool(
+        name = "write_narration_plan",
+        description = "Validate and persist a source-grounded narration and presentation plan"
+    )]
+    fn write_narration_plan(
+        &self,
+        Parameters(input): Parameters<WriteNarrationPlanInput>,
+    ) -> Result<Json<crate::ArtifactEnvelope>, ErrorData> {
+        self.tools
+            .write_narration_plan(input)
+            .map(Json)
+            .map_err(tool_error)
     }
 }
 

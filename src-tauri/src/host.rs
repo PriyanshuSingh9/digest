@@ -82,8 +82,10 @@ pub async fn start_agent_run(
             prompt: format!(
                 "The active Digest job ID is `{}`. Digest already captured and normalized the \
                  article. Read normalized article artifact `{}` with Digest MCP instead of \
-                 fetching the URL yourself. When writing analysis, use that artifact ID as the \
-                 article ID.\n\n{}",
+                 fetching the URL yourself. Use that artifact ID as the article ID when writing \
+                 analysis. After analysis, call write_narration_plan exactly once with concise, \
+                 source-grounded segments. Keep displayText faithful to the source and use ttsText \
+                 only for pronunciation normalization.\n\n{}",
                 input.job_id, ingestion.article.artifact_id, input.prompt
             ),
             job_id: input.job_id,
