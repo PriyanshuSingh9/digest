@@ -243,3 +243,40 @@ fn narration_requires_meaningful_source_diagrams_to_be_presented() {
         100
     );
 }
+
+#[test]
+fn narration_rejects_tts_text_that_adds_new_explanation() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+    let article = ArticleIngestionService::new(service.clone())
+        .persist_response(
+            "job-1",
+            "https://example.com/article",
+            "https://example.com/article",
+            200,
+            Some("text/html"),
+            b"<article><h1>Durable logs</h1><p>The WAL records every acknowledged write.</p></article>",
+        )
+        .expect("persist article")
+        .article;
+    let tools = DigestTools::new(service);
+
+    let error = tools
+        .write_narration_plan(WriteNarrationPlanInput {
+            job_id: "job-1".into(),
+            article_id: article.artifact_id,
+            title: "Durable logs".into(),
+            segments: vec![NarrationSegmentDraft {
+                display_text: "The WAL records every acknowledged write.".into(),
+                tts_text: "The W A L records every acknowledged write. This architecture also makes every replica independently scalable and easier to operate.".into(),
+                source_blocks: vec!["block-2".into()],
+                presentation_type: PresentationType::ArticleText,
+                importance: NarrationImportance::Core,
+                intent: NarrationIntent::Explanation,
+                provenance: ProvenanceKind::SourceDerived,
+            }],
+        })
+        .expect_err("ttsText must not add educational content");
+
+    assert!(error.to_string().contains("pronunciation"));
+}

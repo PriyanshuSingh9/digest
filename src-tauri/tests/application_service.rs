@@ -109,6 +109,14 @@ fn canonical_agent_events_are_ordered_and_job_scoped() {
         .expect("record second event");
     service
         .record_agent_event(NewAgentEvent {
+            job_id: "job-1".into(),
+            session_id: "session-1".into(),
+            kind: NewAgentEventKind::ToolFailed,
+            message: "Invalid tool arguments".into(),
+        })
+        .expect("record failed tool event");
+    service
+        .record_agent_event(NewAgentEvent {
             job_id: "job-2".into(),
             session_id: "session-2".into(),
             kind: NewAgentEventKind::SessionStarted,
@@ -118,10 +126,11 @@ fn canonical_agent_events_are_ordered_and_job_scoped() {
 
     let events = service.list_agent_events("job-1").expect("list events");
 
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 3);
     assert_eq!(events[0].sequence, 1);
     assert_eq!(events[1].sequence, 2);
     assert_eq!(events[1].kind, NewAgentEventKind::ArtifactCreated);
+    assert_eq!(events[2].kind, NewAgentEventKind::ToolFailed);
 }
 
 #[test]

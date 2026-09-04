@@ -296,6 +296,7 @@ impl DigestTools {
                     index + 1
                 )));
             }
+            validate_tts_normalization(index, &segment.display_text, &segment.tts_text)?;
             if let Some(unknown) = segment
                 .source_blocks
                 .iter()
@@ -389,4 +390,73 @@ fn validate_analysis_text(
         )));
     }
     Ok(())
+}
+
+fn validate_tts_normalization(
+    index: usize,
+    display_text: &str,
+    tts_text: &str,
+) -> Result<(), DigestError> {
+    let display_tokens = spoken_tokens(display_text);
+    let tts_tokens = spoken_tokens(tts_text);
+    let allowed_edits = 5.max(display_tokens.len().div_ceil(10));
+    if token_edit_distance_exceeds(&display_tokens, &tts_tokens, allowed_edits) {
+        return Err(DigestError::InvalidInput(format!(
+            "narration segment {} ttsText may only normalize pronunciation, not add or remove content",
+            index + 1
+        )));
+    }
+    Ok(())
+}
+
+fn spoken_tokens(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn token_edit_distance_exceeds(left: &[String], right: &[String], limit: usize) -> bool {
+    if left.len().abs_diff(right.len()) > limit {
+        return true;
+    }
+    if left.is_empty() || right.is_empty() {
+        return left.len().max(right.len()) > limit;
+    }
+    let sentinel = limit + 1;
+    let mut previous = vec![sentinel; right.len() + 1];
+    for (index, value) in previous
+        .iter_mut()
+        .take(limit.min(right.len()) + 1)
+        .enumerate()
+    {
+        *value = index;
+    }
+    let mut current = vec![sentinel; right.len() + 1];
+    for (left_index, left_token) in left.iter().enumerate() {
+        current.fill(sentinel);
+        let row = left_index + 1;
+        if row <= limit {
+            current[0] = row;
+        }
+        let start = row.saturating_sub(limit).max(1);
+        let end = (row + limit).min(right.len());
+        for column in start..=end {
+            current[column] = if left_token == &right[column - 1] {
+                previous[column - 1]
+            } else {
+                1 + previous[column - 1]
+                    .min(previous[column])
+                    .min(current[column - 1])
+            };
+        }
+        if current[start..=end]
+            .iter()
+            .all(|distance| *distance > limit)
+        {
+            return true;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()] > limit
 }

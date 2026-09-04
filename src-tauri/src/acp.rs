@@ -398,16 +398,28 @@ fn canonical_event(update: &SessionUpdate) -> Option<(NewAgentEventKind, String)
         SessionUpdate::AgentMessageChunk(_) => NewAgentEventKind::AgentMessage,
         SessionUpdate::AgentThoughtChunk(_) => NewAgentEventKind::AgentThinking,
         SessionUpdate::ToolCall(_) => NewAgentEventKind::ToolStarted,
-        SessionUpdate::ToolCallUpdate(update) => match update.fields.status {
-            Some(ToolCallStatus::Completed | ToolCallStatus::Failed) => {
-                NewAgentEventKind::ToolCompleted
-            }
-            _ => NewAgentEventKind::ToolProgress,
-        },
+        SessionUpdate::ToolCallUpdate(update) => {
+            tool_update_event_kind(update.fields.status, update.fields.title.as_deref())
+        }
         _ => return None,
     };
     let message = serde_json::to_string(update).unwrap_or_else(|_| format!("{update:?}"));
     Some((kind, message))
+}
+
+fn tool_update_event_kind(
+    status: Option<ToolCallStatus>,
+    title: Option<&str>,
+) -> NewAgentEventKind {
+    if status == Some(ToolCallStatus::Failed)
+        || title.is_some_and(|title| title.trim().eq_ignore_ascii_case("Invalid Tool"))
+    {
+        NewAgentEventKind::ToolFailed
+    } else if status == Some(ToolCallStatus::Completed) {
+        NewAgentEventKind::ToolCompleted
+    } else {
+        NewAgentEventKind::ToolProgress
+    }
 }
 
 fn stop_reason_name(reason: StopReason) -> &'static str {
@@ -418,5 +430,29 @@ fn stop_reason_name(reason: StopReason) -> &'static str {
         StopReason::Refusal => "refusal",
         StopReason::Cancelled => "cancelled",
         _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_or_failed_tool_updates_are_failures_even_when_acp_says_completed() {
+        assert_eq!(
+            tool_update_event_kind(Some(ToolCallStatus::Completed), Some("Invalid Tool")),
+            NewAgentEventKind::ToolFailed
+        );
+        assert_eq!(
+            tool_update_event_kind(Some(ToolCallStatus::Failed), Some("digest_write_analysis")),
+            NewAgentEventKind::ToolFailed
+        );
+        assert_eq!(
+            tool_update_event_kind(
+                Some(ToolCallStatus::Completed),
+                Some("digest_write_analysis")
+            ),
+            NewAgentEventKind::ToolCompleted
+        );
     }
 }

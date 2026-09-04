@@ -335,7 +335,7 @@ dd {
   box-shadow: 0 0 0 1px var(--line);
 }
 .event-indicator.session_started, .event-indicator.session_completed, .event-indicator.artifact_created { background: var(--primary); }
-.event-indicator.session_failed { background: var(--danger); }
+.event-indicator.session_failed, .event-indicator.tool_failed { background: var(--danger); }
 .event-indicator.tool_started, .event-indicator.tool_progress, .event-indicator.tool_completed { background: var(--accent); }
 .event-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .event-meta strong { font-size: 0.76rem; }

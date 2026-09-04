@@ -2396,6 +2396,8 @@ The first Phase 1 increment now provides:
 - durable agent attempts with terminal status and provider-session linkage,
 - a five-minute ACP run deadline and host-startup recovery of attempts interrupted by a previous process,
 - raw canonical agent events plus a coalesced presentation-event projection,
+- explicit failed-tool events even when an ACP adapter reports an invalid tool invocation with a completed transport status,
+- narration validation that permits pronunciation normalization while rejecting substantial content additions or removals in TTS text,
 - retry behavior that reuses a job's latest immutable normalized article by default while retaining an explicit fresh-capture option,
 - a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, capture-quality summaries, media-localization summaries, and completion statistics computed from durable artifacts rather than agent prose.
 
