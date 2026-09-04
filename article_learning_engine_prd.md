@@ -2395,7 +2395,7 @@ The first Phase 1 increment now provides:
 - durable agent attempts with terminal status and provider-session linkage,
 - a five-minute ACP run deadline and host-startup recovery of attempts interrupted by a previous process,
 - raw canonical agent events plus a coalesced presentation-event projection,
-- a dark Chromium/WebView-oriented evaluation interface with capture-quality and media-localization summaries.
+- a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, capture-quality summaries, and media-localization summaries.
 
 This checkpoint does **not** complete Phase 1. The next quality slice must turn narration plans into segmented audio and timing artifacts, define the playable manifest, integrate Kokoro as the primary local TTS provider, and render synchronized playback. Current readability scoring and media selection are intentionally conservative first passes; richer boilerplate removal, responsive-candidate selection, Chromium fallback, a fixture corpus, DNS-rebinding defenses, and format-specific media decoding limits remain Phase 2 work.
 

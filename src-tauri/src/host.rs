@@ -1,6 +1,6 @@
 use crate::{
     AcpClient, AgentEvent, AgentProvider, AgentRunRequest, AgentRunResult, ArticleIngestionService,
-    ArtifactEnvelope, DigestService, McpLaunchSpec, PermissionPolicy, RunAttempt,
+    ArtifactEnvelope, DigestService, McpLaunchSpec, PermissionPolicy, RunAttempt, RunSummary,
 };
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
@@ -63,6 +63,17 @@ pub fn run_snapshot(state: State<'_, HostState>, job_id: String) -> Result<RunSn
             .list_artifacts(&job_id)
             .map_err(|error| error.to_string())?,
     })
+}
+
+#[tauri::command]
+pub fn recent_runs(
+    state: State<'_, HostState>,
+    limit: Option<usize>,
+) -> Result<Vec<RunSummary>, String> {
+    state
+        .service
+        .list_runs(limit.unwrap_or(20))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

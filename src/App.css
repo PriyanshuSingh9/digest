@@ -124,6 +124,72 @@ h3 { margin: 0; font-size: 0.9rem; }
 }
 .section-title > div { display: flex; align-items: baseline; gap: 9px; }
 .run-form { display: flex; flex-direction: column; gap: 17px; background: var(--surface); }
+.recent-runs {
+  padding-bottom: 17px;
+  border-bottom: 1px solid var(--line);
+}
+.recent-runs-heading {
+  min-height: 30px;
+  margin-bottom: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.recent-runs > p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.recent-run-list {
+  max-height: 196px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+.recent-run-list > button {
+  width: 100%;
+  min-height: 49px;
+  padding: 7px 6px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  transition: color var(--duration) var(--ease-out), background var(--duration) var(--ease-out);
+}
+.recent-run-list > button:hover:not(:disabled) { color: var(--ink); background: var(--background); }
+.recent-run-list > button.selected { color: var(--ink); background: var(--background); }
+.recent-run-list .status-dot { flex: 0 0 auto; }
+.recent-run-list .status-dot.completed { background: var(--primary); }
+.recent-run-list .status-dot.running { background: var(--accent); }
+.recent-run-list .status-dot.failed { background: var(--danger); }
+.recent-run-copy { min-width: 0; flex: 1; display: block; }
+.recent-run-copy strong, .recent-run-copy small { display: block; }
+.recent-run-copy strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-run-copy small {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-run-count {
+  min-width: 20px;
+  color: var(--quiet);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.64rem;
+  text-align: right;
+}
 label { color: var(--ink); display: flex; flex-direction: column; gap: 7px; font-size: 0.77rem; font-weight: 650; }
 input, select, textarea {
   width: 100%;

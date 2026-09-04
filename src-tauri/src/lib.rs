@@ -11,7 +11,8 @@ pub use acp::{
 };
 pub use application::{
     AgentEvent, AnalysisDraft, ArtifactEnvelope, ArtifactKind, AttemptStatus, DigestError,
-    DigestService, NewAgentEvent, NewAgentEventKind, RunAttempt, StartRunAttempt,
+    DigestService, NewAgentEvent, NewAgentEventKind, RunAttempt, RunStatus, RunSummary,
+    StartRunAttempt,
 };
 pub use ingestion::{
     ArticleBlock, ArticleImage, ArticleIngestionService, ExtractionDiagnostics, ImageCaptureStatus,
@@ -31,6 +32,7 @@ pub fn run() {
         .setup(host::configure_host)
         .invoke_handler(tauri::generate_handler![
             host::host_info,
+            host::recent_runs,
             host::run_snapshot,
             host::start_agent_run
         ])

@@ -203,6 +203,39 @@ pub struct RunAttempt {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Captured,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl From<AttemptStatus> for RunStatus {
+    fn from(status: AttemptStatus) -> Self {
+        match status {
+            AttemptStatus::Running => Self::Running,
+            AttemptStatus::Completed => Self::Completed,
+            AttemptStatus::Failed => Self::Failed,
+            AttemptStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummary {
+    pub job_id: String,
+    pub title: Option<String>,
+    pub provider: Option<String>,
+    pub status: RunStatus,
+    pub updated_at_ms: i64,
+    pub artifact_count: usize,
+    pub event_count: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct DigestService {
     data_dir: PathBuf,
@@ -328,6 +361,64 @@ impl DigestService {
              FROM run_attempts WHERE job_id = ?1 ORDER BY rowid",
         )?;
         let rows = statement.query_map([job_id], run_attempt_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn list_runs(&self, limit: usize) -> Result<Vec<RunSummary>, DigestError> {
+        let limit = limit.clamp(1, 100) as i64;
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "WITH activity AS (
+                SELECT job_id, created_at_ms AS timestamp FROM artifacts
+                UNION ALL
+                SELECT job_id, created_at_ms AS timestamp FROM agent_events
+                UNION ALL
+                SELECT job_id, COALESCE(finished_at_ms, started_at_ms) AS timestamp
+                FROM run_attempts
+             ),
+             jobs AS (
+                SELECT job_id, MAX(timestamp) AS updated_at_ms
+                FROM activity
+                GROUP BY job_id
+             )
+             SELECT
+                jobs.job_id,
+                jobs.updated_at_ms,
+                (SELECT provider FROM run_attempts
+                 WHERE run_attempts.job_id = jobs.job_id
+                 ORDER BY rowid DESC LIMIT 1),
+                (SELECT status FROM run_attempts
+                 WHERE run_attempts.job_id = jobs.job_id
+                 ORDER BY rowid DESC LIMIT 1),
+                (SELECT json_extract(payload_json, '$.title') FROM artifacts
+                 WHERE artifacts.job_id = jobs.job_id
+                   AND kind = 'normalized_article'
+                 ORDER BY rowid DESC LIMIT 1),
+                (SELECT COUNT(*) FROM artifacts
+                 WHERE artifacts.job_id = jobs.job_id),
+                (SELECT COUNT(*) FROM agent_events
+                 WHERE agent_events.job_id = jobs.job_id)
+             FROM jobs
+             ORDER BY jobs.updated_at_ms DESC, jobs.job_id
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| {
+            let attempt_status: Option<String> = row.get(3)?;
+            let status = attempt_status
+                .map(|status| AttemptStatus::parse(&status).map(RunStatus::from))
+                .transpose()
+                .map_err(to_sql_error)?
+                .unwrap_or(RunStatus::Captured);
+            Ok(RunSummary {
+                job_id: row.get(0)?,
+                updated_at_ms: row.get(1)?,
+                provider: row.get(2)?,
+                status,
+                title: row.get(4)?,
+                artifact_count: row.get::<_, i64>(5)? as usize,
+                event_count: row.get::<_, i64>(6)? as usize,
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 

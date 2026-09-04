@@ -1,6 +1,6 @@
 use digest_lib::{
     AnalysisDraft, ArtifactKind, AttemptStatus, DigestService, NewAgentEvent, NewAgentEventKind,
-    StartRunAttempt,
+    RunStatus, StartRunAttempt,
 };
 
 #[test]
@@ -198,4 +198,42 @@ fn reopening_the_service_marks_abandoned_attempts_as_failed() {
         .as_deref()
         .is_some_and(|error| error.contains("interrupted")));
     assert!(attempts[0].finished_at_ms.is_some());
+}
+
+#[test]
+fn recent_runs_are_ordered_and_summarize_the_latest_attempt() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = DigestService::open(directory.path()).expect("open Digest service");
+    service
+        .write_analysis(AnalysisDraft {
+            job_id: "job-older".into(),
+            article_id: "article-1".into(),
+            summary: "Older run".into(),
+        })
+        .expect("write older artifact");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let attempt = service
+        .start_run_attempt(StartRunAttempt {
+            job_id: "job-newer".into(),
+            provider: "open_code".into(),
+        })
+        .expect("start newer run");
+    service
+        .finish_run_attempt(
+            &attempt.attempt_id,
+            AttemptStatus::Failed,
+            Some("session-1"),
+            Some("test failure"),
+        )
+        .expect("finish newer run");
+
+    let runs = service.list_runs(10).expect("list recent runs");
+
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].job_id, "job-newer");
+    assert_eq!(runs[0].provider.as_deref(), Some("open_code"));
+    assert_eq!(runs[0].status, RunStatus::Failed);
+    assert_eq!(runs[1].job_id, "job-older");
+    assert_eq!(runs[1].status, RunStatus::Captured);
+    assert_eq!(runs[1].artifact_count, 1);
 }

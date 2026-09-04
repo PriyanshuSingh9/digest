@@ -138,6 +138,8 @@ fn captured_article_persists_raw_source_and_normalized_artifacts() {
         .join(format!("{}.bin", result.source.content_hash))
         .exists());
     assert_eq!(service.list_artifacts("job-1").unwrap().len(), 2);
+    let runs = service.list_runs(10).expect("list runs");
+    assert_eq!(runs[0].title.as_deref(), Some("Small feedback loops"));
 }
 
 #[test]

@@ -47,6 +47,15 @@ type ExtractionDiagnostics = {
 type ArticleImage = {
   captureStatus: "pending" | "localized" | "failed";
 };
+type RunSummary = {
+  jobId: string;
+  title: string | null;
+  provider: Provider | null;
+  status: "captured" | "running" | "completed" | "failed" | "cancelled";
+  updatedAtMs: number;
+  artifactCount: number;
+  eventCount: number;
+};
 
 const EMPTY_SNAPSHOT: RunSnapshot = { attempts: [], events: [], artifacts: [] };
 const freshJobId = () => `evaluation-${crypto.randomUUID().slice(0, 8)}`;
@@ -80,6 +89,7 @@ function App() {
     "Read the normalized article artifact. Identify its central argument and most important learning points, then use Digest write_analysis exactly once.",
   );
   const [snapshot, setSnapshot] = useState<RunSnapshot>(EMPTY_SNAPSHOT);
+  const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [allowOncePermissions, setAllowOncePermissions] = useState(false);
@@ -113,9 +123,40 @@ function App() {
     }
   }
 
+  async function refreshRecentRuns() {
+    try {
+      setRecentRuns(await invoke<RunSummary[]>("recent_runs", { limit: 20 }));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function loadRun(id: string) {
+    setJobId(id);
+    setError(null);
+    setResult(null);
+    setSelectedArtifact(null);
+    try {
+      setSnapshot(await invoke<RunSnapshot>("run_snapshot", { jobId: id }));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  function createRun() {
+    setJobId(freshJobId());
+    setSnapshot(EMPTY_SNAPSHOT);
+    setSelectedArtifact(null);
+    setResult(null);
+    setError(null);
+  }
+
   useEffect(() => {
     invoke<HostInfo>("host_info")
-      .then(setHost)
+      .then((info) => {
+        setHost(info);
+        void refreshRecentRuns();
+      })
       .catch(() =>
         setError(
           "Digest must run inside its Tauri host. Start it with pnpm tauri dev.",
@@ -159,6 +200,7 @@ function App() {
     } finally {
       setRunning(false);
       await refreshSnapshot();
+      await refreshRecentRuns();
     }
   }
 
@@ -205,16 +247,54 @@ function App() {
 
       <div className="workspace">
         <form className="run-form" onSubmit={startRun}>
+          <section className="recent-runs" aria-labelledby="recent-runs-title">
+            <div className="recent-runs-heading">
+              <h2 id="recent-runs-title">Recent runs</h2>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={createRun}
+                disabled={running}
+              >
+                New run
+              </button>
+            </div>
+            {recentRuns.length === 0 ? (
+              <p>No saved runs yet.</p>
+            ) : (
+              <div className="recent-run-list">
+                {recentRuns.map((run) => (
+                  <button
+                    type="button"
+                    key={run.jobId}
+                    className={run.jobId === jobId ? "selected" : ""}
+                    aria-current={run.jobId === jobId ? "page" : undefined}
+                    onClick={() => void loadRun(run.jobId)}
+                    disabled={running}
+                  >
+                    <span className={`status-dot ${run.status}`} />
+                    <span className="recent-run-copy">
+                      <strong>{run.title ?? run.jobId}</strong>
+                      <small>
+                        {run.provider ? eventLabel(run.provider) : "Captured"} ·{" "}
+                        {new Date(run.updatedAtMs).toLocaleString()}
+                      </small>
+                    </span>
+                    <span className="recent-run-count">
+                      {run.artifactCount}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
           <div className="section-title">
             <h2>Session setup</h2>
             <span>{provider === "open_code" ? "OpenCode ACP" : "agy adapter"}</span>
           </div>
           <label>
             Job ID
-            <div className="inline-control">
-              <input value={jobId} onChange={(event) => setJobId(event.currentTarget.value)} required />
-              <button className="secondary-button" type="button" onClick={() => setJobId(freshJobId())}>New</button>
-            </div>
+            <input value={jobId} onChange={(event) => setJobId(event.currentTarget.value)} required />
           </label>
           <label>
             Agent provider
