@@ -7,7 +7,7 @@ use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ClaimKind {
+pub enum ProvenanceKind {
     SourceDerived,
     AiExplanation,
     AiInference,
@@ -19,7 +19,7 @@ pub enum ClaimKind {
 pub struct AnalysisClaim {
     pub text: String,
     pub source_blocks: Vec<String>,
-    pub kind: ClaimKind,
+    pub kind: ProvenanceKind,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
@@ -47,7 +47,7 @@ pub struct AnalysisFinding {
     pub category: AnalysisFindingKind,
     pub text: String,
     pub source_blocks: Vec<String>,
-    pub kind: ClaimKind,
+    pub kind: ProvenanceKind,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -101,7 +101,7 @@ pub struct NarrationSegmentDraft {
     pub presentation_type: PresentationType,
     pub importance: NarrationImportance,
     pub intent: NarrationIntent,
-    pub provenance: ClaimKind,
+    pub provenance: ProvenanceKind,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

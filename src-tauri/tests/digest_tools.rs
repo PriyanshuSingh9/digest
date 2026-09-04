@@ -1,7 +1,7 @@
 use digest_lib::{
-    AnalysisClaim, AnalysisFinding, AnalysisFindingKind, ArticleIngestionService, ClaimKind,
-    DigestService, DigestTools, NarrationImportance, NarrationIntent, NarrationSegmentDraft,
-    PresentationType, ReadArtifactInput, WriteAnalysisInput, WriteNarrationPlanInput,
+    AnalysisClaim, AnalysisFinding, AnalysisFindingKind, ArticleIngestionService, DigestService,
+    DigestTools, NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType,
+    ProvenanceKind, ReadArtifactInput, WriteAnalysisInput, WriteNarrationPlanInput,
 };
 use std::sync::Arc;
 
@@ -29,13 +29,13 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
             central_argument: AnalysisClaim {
                 text: "Durable queues decouple producers and consumers.".into(),
                 source_blocks: vec!["block-2".into()],
-                kind: ClaimKind::SourceDerived,
+                kind: ProvenanceKind::SourceDerived,
             },
             findings: vec![AnalysisFinding {
                 category: AnalysisFindingKind::VisualizationOpportunity,
                 text: "Independent components can tolerate load spikes.".into(),
                 source_blocks: vec!["block-2".into()],
-                kind: ClaimKind::AiInference,
+                kind: ProvenanceKind::AiInference,
             }],
         })
         .expect("write analysis through tool facade");
@@ -64,13 +64,13 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
             central_argument: AnalysisClaim {
                 text: "An unsupported claim.".into(),
                 source_blocks: vec!["block-99".into()],
-                kind: ClaimKind::SourceDerived,
+                kind: ProvenanceKind::SourceDerived,
             },
             findings: vec![AnalysisFinding {
                 category: AnalysisFindingKind::KeyClaim,
                 text: "A valid point.".into(),
                 source_blocks: vec!["block-1".into()],
-                kind: ClaimKind::SourceDerived,
+                kind: ProvenanceKind::SourceDerived,
             }],
         })
         .expect_err("unknown analysis source blocks must be rejected");
@@ -106,7 +106,7 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 presentation_type: PresentationType::ArticleText,
                 importance: NarrationImportance::Core,
                 intent: NarrationIntent::Introduction,
-                provenance: ClaimKind::SourceDerived,
+                provenance: ProvenanceKind::SourceDerived,
             }],
         })
         .expect("write narration plan");
@@ -142,7 +142,7 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 presentation_type: PresentationType::ArticleText,
                 importance: NarrationImportance::Supporting,
                 intent: NarrationIntent::Explanation,
-                provenance: ClaimKind::AiExplanation,
+                provenance: ProvenanceKind::AiExplanation,
             }],
         })
         .expect_err("unknown source blocks must be rejected");
@@ -210,7 +210,7 @@ fn narration_requires_meaningful_source_diagrams_to_be_presented() {
             presentation_type: PresentationType::ArticleText,
             importance: NarrationImportance::Core,
             intent: NarrationIntent::Explanation,
-            provenance: ClaimKind::SourceDerived,
+            provenance: ProvenanceKind::SourceDerived,
         }],
     };
 
@@ -231,7 +231,7 @@ fn narration_requires_meaningful_source_diagrams_to_be_presented() {
                 presentation_type: PresentationType::Diagram,
                 importance: NarrationImportance::Core,
                 intent: NarrationIntent::Explanation,
-                provenance: ClaimKind::SourceDerived,
+                provenance: ProvenanceKind::SourceDerived,
             }],
         })
         .expect("present a source diagram");
