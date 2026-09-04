@@ -111,8 +111,10 @@ pub async fn start_agent_run(
                 "The active Digest job ID is `{}`. Digest already captured and normalized the \
                  article. Read normalized article artifact `{}` with Digest MCP instead of \
                  fetching the URL yourself. Use that artifact ID as the article ID when writing \
-                 analysis. In write_analysis, cite source block IDs for the central argument and \
-                 every learning point, and mark any inference explicitly. After analysis, call \
+                 analysis. In write_analysis, categorize the article's important concepts, claims, \
+                 examples, difficult sections, and visualization opportunities as findings. Cite \
+                 source block IDs for the central argument and every finding, and mark AI inference \
+                 or explanation explicitly. After analysis, call \
                  write_narration_plan exactly once with concise, source-grounded segments. Label \
                  each segment's learning intent and importance. Keep displayText faithful to the \
                  source. Use ttsText only for pronunciation normalization; preserve established \

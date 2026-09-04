@@ -1,7 +1,7 @@
 use digest_lib::{
-    AnalysisClaim, ArticleIngestionService, ClaimKind, DigestService, DigestTools,
-    NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType,
-    ReadArtifactInput, WriteAnalysisInput, WriteNarrationPlanInput,
+    AnalysisClaim, AnalysisFinding, AnalysisFindingKind, ArticleIngestionService, ClaimKind,
+    DigestService, DigestTools, NarrationImportance, NarrationIntent, NarrationSegmentDraft,
+    PresentationType, ReadArtifactInput, WriteAnalysisInput, WriteNarrationPlanInput,
 };
 use std::sync::Arc;
 
@@ -31,10 +31,11 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
                 source_blocks: vec!["block-2".into()],
                 kind: ClaimKind::SourceDerived,
             },
-            learning_points: vec![AnalysisClaim {
+            findings: vec![AnalysisFinding {
+                category: AnalysisFindingKind::VisualizationOpportunity,
                 text: "Independent components can tolerate load spikes.".into(),
                 source_blocks: vec!["block-2".into()],
-                kind: ClaimKind::Inference,
+                kind: ClaimKind::AiInference,
             }],
         })
         .expect("write analysis through tool facade");
@@ -51,9 +52,10 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
         "block-2"
     );
     assert_eq!(
-        read.artifact.payload["learningPoints"][0]["kind"],
-        "inference"
+        read.artifact.payload["findings"][0]["category"],
+        "visualization_opportunity"
     );
+    assert_eq!(read.artifact.payload["findings"][0]["kind"], "ai_inference");
 
     let error = tools
         .write_analysis(WriteAnalysisInput {
@@ -64,7 +66,8 @@ fn digest_tools_expose_schema_specific_analysis_write_and_artifact_read() {
                 source_blocks: vec!["block-99".into()],
                 kind: ClaimKind::SourceDerived,
             },
-            learning_points: vec![AnalysisClaim {
+            findings: vec![AnalysisFinding {
+                category: AnalysisFindingKind::KeyClaim,
                 text: "A valid point.".into(),
                 source_blocks: vec!["block-1".into()],
                 kind: ClaimKind::SourceDerived,

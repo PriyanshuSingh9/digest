@@ -9,12 +9,42 @@ use std::{collections::HashSet, sync::Arc};
 #[serde(rename_all = "snake_case")]
 pub enum ClaimKind {
     SourceDerived,
-    Inference,
+    AiExplanation,
+    AiInference,
+    GeneratedEducational,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisClaim {
+    pub text: String,
+    pub source_blocks: Vec<String>,
+    pub kind: ClaimKind,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisFindingKind {
+    MajorConcept,
+    SupportingConcept,
+    KeyClaim,
+    Example,
+    Definition,
+    Comparison,
+    CausalRelationship,
+    CodeExample,
+    QuantitativeClaim,
+    ImportantEntity,
+    DifficultSection,
+    Prerequisite,
+    VisualizationOpportunity,
+    PointOfConfusion,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisFinding {
+    pub category: AnalysisFindingKind,
     pub text: String,
     pub source_blocks: Vec<String>,
     pub kind: ClaimKind,
@@ -26,7 +56,7 @@ pub struct WriteAnalysisInput {
     pub job_id: String,
     pub article_id: String,
     pub central_argument: AnalysisClaim,
-    pub learning_points: Vec<AnalysisClaim>,
+    pub findings: Vec<AnalysisFinding>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
@@ -127,10 +157,10 @@ impl DigestTools {
     ) -> Result<WriteAnalysisOutput, DigestError> {
         if input.job_id.trim().is_empty()
             || input.article_id.trim().is_empty()
-            || input.learning_points.is_empty()
+            || input.findings.is_empty()
         {
             return Err(DigestError::InvalidInput(
-                "analysis requires jobId, articleId, centralArgument, and learningPoints".into(),
+                "analysis requires jobId, articleId, centralArgument, and findings".into(),
             ));
         }
         let article = self.service.read_artifact(&input.article_id)?;
@@ -142,8 +172,13 @@ impl DigestTools {
         }
         let source_blocks = source_block_ids(&article);
         validate_analysis_claim("centralArgument", &input.central_argument, &source_blocks)?;
-        for (index, claim) in input.learning_points.iter().enumerate() {
-            validate_analysis_claim(&format!("learningPoints[{}]", index), claim, &source_blocks)?;
+        for (index, finding) in input.findings.iter().enumerate() {
+            validate_analysis_text(
+                &format!("findings[{index}]"),
+                &finding.text,
+                &finding.source_blocks,
+                &source_blocks,
+            )?;
         }
         let artifact = self.service.persist_json_artifact(
             &input.job_id,
@@ -152,7 +187,7 @@ impl DigestTools {
                 "schemaVersion": "1.1",
                 "articleId": input.article_id,
                 "centralArgument": input.central_argument,
-                "learningPoints": input.learning_points,
+                "findings": input.findings,
             }),
         )?;
         Ok(WriteAnalysisOutput {
@@ -286,13 +321,21 @@ fn validate_analysis_claim(
     claim: &AnalysisClaim,
     source_blocks: &HashSet<&str>,
 ) -> Result<(), DigestError> {
-    if claim.text.trim().is_empty() || claim.source_blocks.is_empty() {
+    validate_analysis_text(field, &claim.text, &claim.source_blocks, source_blocks)
+}
+
+fn validate_analysis_text(
+    field: &str,
+    text: &str,
+    claim_source_blocks: &[String],
+    source_blocks: &HashSet<&str>,
+) -> Result<(), DigestError> {
+    if text.trim().is_empty() || claim_source_blocks.is_empty() {
         return Err(DigestError::InvalidInput(format!(
             "{field} requires text and sourceBlocks"
         )));
     }
-    if let Some(unknown) = claim
-        .source_blocks
+    if let Some(unknown) = claim_source_blocks
         .iter()
         .find(|source_block| !source_blocks.contains(source_block.as_str()))
     {
