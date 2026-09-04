@@ -1,49 +1,304 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type Provider = "open_code" | "agy";
+type AgentEvent = {
+  sequence: number;
+  jobId: string;
+  sessionId: string;
+  kind: string;
+  message: string;
+  createdAtMs: number;
+};
+type Artifact = {
+  schemaVersion: string;
+  artifactId: string;
+  jobId: string;
+  kind: string;
+  contentHash: string;
+  createdAtMs: number;
+  payload: Record<string, unknown>;
+};
+type RunSnapshot = { events: AgentEvent[]; artifacts: Artifact[] };
+type HostInfo = { dataDir: string; mcpExecutable: string };
+type AgentRunResult = { sessionId: string; stopReason: string };
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+const EMPTY_SNAPSHOT: RunSnapshot = { events: [], artifacts: [] };
+const freshJobId = () => `evaluation-${crypto.randomUUID().slice(0, 8)}`;
+const eventLabel = (kind: string) =>
+  kind
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+
+function conciseMessage(event: AgentEvent) {
+  if (!event.message.startsWith("{")) return event.message;
+  try {
+    const update = JSON.parse(event.message) as Record<string, unknown>;
+    const content = update.content as Record<string, unknown> | undefined;
+    if (typeof content?.text === "string") return content.text;
+    if (typeof update.title === "string") return update.title;
+  } catch {
+    return event.message;
+  }
+  return eventLabel(event.kind);
+}
+
+function App() {
+  const [host, setHost] = useState<HostInfo | null>(null);
+  const [jobId, setJobId] = useState(freshJobId);
+  const [cwd, setCwd] = useState("");
+  const [provider, setProvider] = useState<Provider>("open_code");
+  const [adapterCommand, setAdapterCommand] = useState("");
+  const [prompt, setPrompt] = useState(
+    "Analyze the supplied article context. Use the Digest write_analysis tool exactly once, then report what artifact you created.",
+  );
+  const [snapshot, setSnapshot] = useState<RunSnapshot>(EMPTY_SNAPSHOT);
+  const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [allowOncePermissions, setAllowOncePermissions] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<AgentRunResult | null>(null);
+
+  const activeArtifact = useMemo(
+    () =>
+      snapshot.artifacts.find(
+        (artifact) => artifact.artifactId === selectedArtifact,
+      ) ?? snapshot.artifacts[snapshot.artifacts.length - 1],
+    [selectedArtifact, snapshot.artifacts],
+  );
+
+  async function refreshSnapshot(id = jobId) {
+    if (!id.trim()) return;
+    try {
+      setSnapshot(await invoke<RunSnapshot>("run_snapshot", { jobId: id }));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  useEffect(() => {
+    invoke<HostInfo>("host_info")
+      .then(setHost)
+      .catch(() =>
+        setError(
+          "Digest must run inside its Tauri host. Start it with pnpm tauri dev.",
+        ),
+      );
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const poll = window.setInterval(() => void refreshSnapshot(), 700);
+    return () => window.clearInterval(poll);
+  }, [jobId, running]);
+
+  async function startRun(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setResult(null);
+    setSnapshot(EMPTY_SNAPSHOT);
+    setSelectedArtifact(null);
+    setRunning(true);
+    const providerInput =
+      provider === "open_code"
+        ? { provider: "open_code" }
+        : { provider: "agy", adapterCommand, adapterArgs: [] };
+
+    try {
+      setResult(
+        await invoke<AgentRunResult>("start_agent_run", {
+          input: {
+            jobId,
+            cwd,
+            prompt,
+            provider: providerInput,
+            allowOncePermissions,
+          },
+        }),
+      );
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setRunning(false);
+      await refreshSnapshot();
+    }
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">D</span>
+          <div>
+            <strong>Digest</strong>
+            <span>Agent evaluation control plane</span>
+          </div>
+        </div>
+        <div className="host-state">
+          <span className={host ? "status-dot ready" : "status-dot"} />
+          {host ? "Local host ready" : "Connecting to host"}
+        </div>
+      </header>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <section className="workspace-heading">
+        <div>
+          <p className="context-label">Phase 0 · Walking skeleton</p>
+          <h1>Run an artifact evaluation</h1>
+          <p>
+            Start an ACP session, observe its canonical activity, and inspect
+            every durable artifact the agent creates through Digest MCP.
+          </p>
+        </div>
+        {result && (
+          <div className="completion-state" role="status">
+            <span className="status-dot ready" />
+            Session ended · {eventLabel(result.stopReason)}
+          </div>
+        )}
+      </section>
+
+      {error && (
+        <div className="error-banner" role="alert">
+          <strong>Run needs attention</strong>
+          <span>{error}</span>
+          <button type="button" onClick={() => setError(null)}>Dismiss</button>
+        </div>
+      )}
+
+      <div className="workspace">
+        <form className="run-form" onSubmit={startRun}>
+          <div className="section-title">
+            <h2>Session setup</h2>
+            <span>{provider === "open_code" ? "OpenCode ACP" : "agy adapter"}</span>
+          </div>
+          <label>
+            Job ID
+            <div className="inline-control">
+              <input value={jobId} onChange={(event) => setJobId(event.currentTarget.value)} required />
+              <button className="secondary-button" type="button" onClick={() => setJobId(freshJobId())}>New</button>
+            </div>
+          </label>
+          <label>
+            Agent provider
+            <select value={provider} onChange={(event) => setProvider(event.currentTarget.value as Provider)}>
+              <option value="open_code">OpenCode</option>
+              <option value="agy">agy through ACP adapter</option>
+            </select>
+          </label>
+          {provider === "agy" && (
+            <label>
+              Adapter executable
+              <input
+                value={adapterCommand}
+                onChange={(event) => setAdapterCommand(event.currentTarget.value)}
+                placeholder="/absolute/path/to/agy-acp"
+                required
+              />
+            </label>
+          )}
+          <label>
+            Working directory
+            <input
+              value={cwd}
+              onChange={(event) => setCwd(event.currentTarget.value)}
+              placeholder="/absolute/path/to/evaluation-workspace"
+              required
+            />
+            <span className="field-help">ACP requires an absolute directory visible to the agent.</span>
+          </label>
+          <label>
+            Evaluation prompt
+            <textarea value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} rows={7} required />
+          </label>
+          <label className="permission-control">
+            <input
+              type="checkbox"
+              checked={allowOncePermissions}
+              onChange={(event) => setAllowOncePermissions(event.currentTarget.checked)}
+            />
+            <span>
+              Allow one-time agent actions for this run. Persistent permissions
+              are never granted.
+            </span>
+          </label>
+          <button className="primary-button" disabled={running || !host || !allowOncePermissions}>
+            {running ? "Agent is running…" : "Start evaluation"}
+          </button>
+          <dl className="host-details">
+            <div><dt>Artifact store</dt><dd title={host?.dataDir}>{host?.dataDir ?? "Unavailable"}</dd></div>
+            <div><dt>MCP transport</dt><dd>stdio · bundled host</dd></div>
+          </dl>
+        </form>
+
+        <section className="activity-panel" aria-labelledby="activity-title">
+          <div className="section-title">
+            <div>
+              <h2 id="activity-title">Agent activity</h2>
+              <span aria-live="polite">{running ? "Live" : `${snapshot.events.length} event${snapshot.events.length === 1 ? "" : "s"}`}</span>
+            </div>
+            <button className="secondary-button" type="button" onClick={() => void refreshSnapshot()} disabled={!jobId}>Refresh</button>
+          </div>
+          {snapshot.events.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-glyph" aria-hidden="true">↳</span>
+              <h3>No agent activity yet</h3>
+              <p>Configure a provider and start an evaluation. ACP updates and MCP tool activity will appear here in sequence.</p>
+            </div>
+          ) : (
+            <ol className="event-list">
+              {snapshot.events.map((event) => (
+                <li key={event.sequence}>
+                  <span className={`event-indicator ${event.kind}`} />
+                  <div>
+                    <div className="event-meta">
+                      <strong>{eventLabel(event.kind)}</strong>
+                      <time dateTime={new Date(event.createdAtMs).toISOString()}>{new Date(event.createdAtMs).toLocaleTimeString()}</time>
+                    </div>
+                    <p>{conciseMessage(event)}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+
+        <section className="artifact-panel" aria-labelledby="artifact-title">
+          <div className="section-title">
+            <h2 id="artifact-title">Artifacts</h2>
+            <span>{snapshot.artifacts.length} durable</span>
+          </div>
+          {snapshot.artifacts.length === 0 ? (
+            <div className="artifact-empty">Validated MCP outputs will appear here with their content hash.</div>
+          ) : (
+            <>
+              <div className="artifact-tabs" role="list">
+                {snapshot.artifacts.map((artifact) => (
+                  <button
+                    type="button"
+                    key={artifact.artifactId}
+                    className={activeArtifact?.artifactId === artifact.artifactId ? "selected" : ""}
+                    onClick={() => setSelectedArtifact(artifact.artifactId)}
+                  >
+                    <strong>{eventLabel(artifact.kind)}</strong>
+                    <span>{artifact.artifactId.slice(0, 9)}</span>
+                  </button>
+                ))}
+              </div>
+              {activeArtifact && (
+                <div className="artifact-detail">
+                  <dl>
+                    <div><dt>Schema</dt><dd>{activeArtifact.schemaVersion}</dd></div>
+                    <div><dt>Content hash</dt><dd title={activeArtifact.contentHash}>{activeArtifact.contentHash.slice(0, 16)}</dd></div>
+                  </dl>
+                  <pre>{JSON.stringify(activeArtifact.payload, null, 2)}</pre>
+                </div>
+              )}
+            </>
+          )}
+        </section>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
     </main>
   );
 }
