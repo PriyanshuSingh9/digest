@@ -1,6 +1,7 @@
 mod acp;
 mod application;
 mod host;
+mod ingestion;
 mod mcp;
 mod tools;
 
@@ -9,12 +10,17 @@ pub use acp::{
     McpLaunchSpec, PermissionPolicy,
 };
 pub use application::{
-    AgentEvent, AnalysisDraft, ArtifactEnvelope, ArtifactKind, DigestError, DigestService,
-    NewAgentEvent, NewAgentEventKind,
+    AgentEvent, AnalysisDraft, ArtifactEnvelope, ArtifactKind, AttemptStatus, DigestError,
+    DigestService, NewAgentEvent, NewAgentEventKind, RunAttempt, StartRunAttempt,
+};
+pub use ingestion::{
+    ArticleBlock, ArticleImage, ArticleIngestionService, IngestionError, IngestionResult,
+    NormalizedArticle,
 };
 pub use mcp::DigestMcpServer;
 pub use tools::{
-    DigestTools, ReadArtifactInput, ReadArtifactOutput, WriteAnalysisInput, WriteAnalysisOutput,
+    DigestTools, IngestArticleInput, IngestArticleOutput, ReadArtifactInput, ReadArtifactOutput,
+    WriteAnalysisInput, WriteAnalysisOutput,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

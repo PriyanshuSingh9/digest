@@ -30,6 +30,9 @@ schemars = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 rmcp = { version = "3.2", features = ["server", "transport-io"] }
 agent-client-protocol = "2.1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+scraper = "0.27"
+url = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"

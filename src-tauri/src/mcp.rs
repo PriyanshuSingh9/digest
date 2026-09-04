@@ -1,5 +1,6 @@
 use crate::{
-    DigestTools, ReadArtifactInput, ReadArtifactOutput, WriteAnalysisInput, WriteAnalysisOutput,
+    DigestTools, IngestArticleInput, IngestArticleOutput, ReadArtifactInput, ReadArtifactOutput,
+    WriteAnalysisInput, WriteAnalysisOutput,
 };
 use rmcp::{
     handler::server::wrapper::{Json, Parameters},
@@ -45,6 +46,21 @@ impl DigestMcpServer {
             .read_artifact(input)
             .map(Json)
             .map_err(tool_error)
+    }
+
+    #[tool(
+        name = "ingest_article",
+        description = "Safely capture an article URL and persist immutable source and normalized article artifacts"
+    )]
+    async fn ingest_article(
+        &self,
+        Parameters(input): Parameters<IngestArticleInput>,
+    ) -> Result<Json<IngestArticleOutput>, ErrorData> {
+        self.tools
+            .ingest_article(input)
+            .await
+            .map(Json)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
 }
 

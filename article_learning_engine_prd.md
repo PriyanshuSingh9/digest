@@ -2378,6 +2378,21 @@ Exit criteria:
 
 > One benchmark article becomes a complete playable lesson through an OpenCode-orchestrated workflow, and the run emits a quality report.
 
+### Current implementation checkpoint
+
+The first Phase 1 increment now provides:
+
+- article URL input in the Tauri control plane,
+- bounded native HTTP capture with manual redirect handling and rejection of private or loopback targets,
+- immutable raw response objects plus versioned source-capture envelopes,
+- a normalized article artifact containing headings, paragraphs, code blocks, lists, quotes, and resolved image references,
+- an `ingest_article` MCP tool backed by the same shell-independent Rust application service,
+- durable agent attempts with terminal status and provider-session linkage,
+- raw canonical agent events plus a coalesced presentation-event projection,
+- a dark Chromium/WebView-oriented evaluation interface.
+
+This checkpoint does **not** complete Phase 1. The next quality slice must add robust readability scoring and extraction diagnostics, download and localize image assets, produce narration and timing artifacts, define the playable manifest, add local TTS, and render synchronized playback. HTTP hardening currently covers the initial bounded static-fetch path; Chromium fallback, a fixture corpus, DNS-rebinding defenses, and complete media limits remain Phase 2 work.
+
 ---
 
 ## Phase 2 — Ingestion Hardening

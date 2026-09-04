@@ -1,4 +1,7 @@
-use crate::{AnalysisDraft, ArtifactEnvelope, DigestError, DigestService};
+use crate::{
+    AnalysisDraft, ArticleIngestionService, ArtifactEnvelope, DigestError, DigestService,
+    IngestionError,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -28,6 +31,20 @@ pub struct ReadArtifactInput {
 #[serde(rename_all = "camelCase")]
 pub struct ReadArtifactOutput {
     pub artifact: ArtifactEnvelope,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestArticleInput {
+    pub job_id: String,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestArticleOutput {
+    pub source_artifact_id: String,
+    pub article_artifact_id: String,
 }
 
 #[derive(Clone)]
@@ -61,6 +78,19 @@ impl DigestTools {
     ) -> Result<ReadArtifactOutput, DigestError> {
         Ok(ReadArtifactOutput {
             artifact: self.service.read_artifact(&input.artifact_id)?,
+        })
+    }
+
+    pub async fn ingest_article(
+        &self,
+        input: IngestArticleInput,
+    ) -> Result<IngestArticleOutput, IngestionError> {
+        let result = ArticleIngestionService::new(self.service.clone())
+            .ingest_url(&input.job_id, &input.url)
+            .await?;
+        Ok(IngestArticleOutput {
+            source_artifact_id: result.source.artifact_id,
+            article_artifact_id: result.article.artifact_id,
         })
     }
 }

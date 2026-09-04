@@ -2,15 +2,15 @@
 name: Digest
 description: Calm, precise control plane for evaluating agent-generated learning artifacts
 colors:
-  background: "oklch(1 0 0)"
-  surface: "oklch(0.975 0.004 130)"
-  ink: "oklch(0.2 0.018 130)"
-  muted: "oklch(0.47 0.018 130)"
-  line: "oklch(0.89 0.008 130)"
-  primary: "oklch(0.49 0.13 130)"
-  primary-hover: "oklch(0.43 0.13 130)"
-  accent: "oklch(0.5 0.16 255)"
-  danger: "oklch(0.53 0.19 25)"
+  background: "oklch(0.13 0.008 130)"
+  surface: "oklch(0.18 0.01 130)"
+  ink: "oklch(0.93 0.008 130)"
+  muted: "oklch(0.72 0.012 130)"
+  line: "oklch(0.28 0.012 130)"
+  primary: "oklch(0.56 0.14 130)"
+  primary-hover: "oklch(0.62 0.14 130)"
+  accent: "oklch(0.7 0.14 255)"
+  danger: "oklch(0.66 0.18 25)"
 typography:
   body:
     fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
@@ -50,7 +50,7 @@ Digest is a restrained, task-focused Linux control plane. It should feel dense b
 
 ## Colors
 
-Pure white keeps long evaluation sessions clear under normal office lighting. Olive is reserved for primary action and successful lifecycle state; blue distinguishes tool activity; red is used only for actionable failures. All implementation colors use OKLCH.
+A near-black neutral surface keeps the Linux control plane focused and reduces glare during long evaluation sessions. Olive is reserved for primary action and successful lifecycle state; blue distinguishes tool activity; red is used only for actionable failures. All implementation colors use OKLCH.
 
 ## Typography
 

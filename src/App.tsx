@@ -20,11 +20,25 @@ type Artifact = {
   createdAtMs: number;
   payload: Record<string, unknown>;
 };
-type RunSnapshot = { events: AgentEvent[]; artifacts: Artifact[] };
+type RunAttempt = {
+  attemptId: string;
+  jobId: string;
+  provider: Provider;
+  providerSessionId: string | null;
+  status: "running" | "completed" | "failed" | "cancelled";
+  startedAtMs: number;
+  finishedAtMs: number | null;
+  error: string | null;
+};
+type RunSnapshot = {
+  attempts: RunAttempt[];
+  events: AgentEvent[];
+  artifacts: Artifact[];
+};
 type HostInfo = { dataDir: string; mcpExecutable: string };
 type AgentRunResult = { sessionId: string; stopReason: string };
 
-const EMPTY_SNAPSHOT: RunSnapshot = { events: [], artifacts: [] };
+const EMPTY_SNAPSHOT: RunSnapshot = { attempts: [], events: [], artifacts: [] };
 const freshJobId = () => `evaluation-${crypto.randomUUID().slice(0, 8)}`;
 const eventLabel = (kind: string) =>
   kind
@@ -49,10 +63,11 @@ function App() {
   const [host, setHost] = useState<HostInfo | null>(null);
   const [jobId, setJobId] = useState(freshJobId);
   const [cwd, setCwd] = useState("");
+  const [articleUrl, setArticleUrl] = useState("");
   const [provider, setProvider] = useState<Provider>("open_code");
   const [adapterCommand, setAdapterCommand] = useState("");
   const [prompt, setPrompt] = useState(
-    "Analyze the supplied article context. Use the Digest write_analysis tool exactly once, then report what artifact you created.",
+    "Read the normalized article artifact. Identify its central argument and most important learning points, then use Digest write_analysis exactly once.",
   );
   const [snapshot, setSnapshot] = useState<RunSnapshot>(EMPTY_SNAPSHOT);
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
@@ -112,6 +127,7 @@ function App() {
           input: {
             jobId,
             cwd,
+            articleUrl,
             prompt,
             provider: providerInput,
             allowOncePermissions,
@@ -144,8 +160,8 @@ function App() {
 
       <section className="workspace-heading">
         <div>
-          <p className="context-label">Phase 0 · Walking skeleton</p>
-          <h1>Run an artifact evaluation</h1>
+          <p className="context-label">Phase 1 · Quality vertical slice</p>
+          <h1>Compile an article evaluation</h1>
           <p>
             Start an ACP session, observe its canonical activity, and inspect
             every durable artifact the agent creates through Digest MCP.
@@ -199,6 +215,19 @@ function App() {
             </label>
           )}
           <label>
+            Article URL
+            <input
+              type="url"
+              value={articleUrl}
+              onChange={(event) => setArticleUrl(event.currentTarget.value)}
+              placeholder="https://example.com/article"
+              required
+            />
+            <span className="field-help">
+              Digest captures the source before the agent starts.
+            </span>
+          </label>
+          <label>
             Working directory
             <input
               value={cwd}
@@ -240,6 +269,17 @@ function App() {
             </div>
             <button className="secondary-button" type="button" onClick={() => void refreshSnapshot()} disabled={!jobId}>Refresh</button>
           </div>
+          {snapshot.attempts.length > 0 && (
+            <div className="attempt-strip" aria-label="Run attempts">
+              {snapshot.attempts.map((attempt, index) => (
+                <div key={attempt.attemptId} className={`attempt ${attempt.status}`}>
+                  <span className="status-dot" />
+                  <strong>Attempt {index + 1}</strong>
+                  <span>{eventLabel(attempt.status)}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {snapshot.events.length === 0 ? (
             <div className="empty-state">
               <span className="empty-glyph" aria-hidden="true">↳</span>

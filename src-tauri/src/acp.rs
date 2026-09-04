@@ -1,4 +1,4 @@
-use crate::{DigestService, NewAgentEvent, NewAgentEventKind};
+use crate::{AttemptStatus, DigestService, NewAgentEvent, NewAgentEventKind, StartRunAttempt};
 use agent_client_protocol::schema::v1::{
     ContentBlock, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
@@ -32,6 +32,13 @@ pub struct AgentLaunchSpec {
 }
 
 impl AgentProvider {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::OpenCode => "open_code",
+            Self::Agy { .. } => "agy",
+        }
+    }
+
     pub fn launch_spec(&self) -> AgentLaunchSpec {
         match self {
             Self::OpenCode => AgentLaunchSpec {
@@ -139,11 +146,29 @@ impl AcpClient {
         request: AgentRunRequest,
     ) -> Result<AgentRunResult, AcpClientError> {
         validate_request(&request)?;
+        let attempt = self
+            .service
+            .start_run_attempt(StartRunAttempt {
+                job_id: request.job_id.clone(),
+                provider: request.provider.id().into(),
+            })
+            .map_err(|error| AcpClientError::Persistence(error.to_string()))?;
         let launch = request.provider.launch_spec();
         let mut command = vec![launch.command.to_string_lossy().into_owned()];
         command.extend(launch.args);
-        let agent = AcpAgent::from_args(command)
-            .map_err(|error| AcpClientError::Protocol(error.to_string()))?;
+        let agent = match AcpAgent::from_args(command) {
+            Ok(agent) => agent,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = self.service.finish_run_attempt(
+                    &attempt.attempt_id,
+                    AttemptStatus::Failed,
+                    None,
+                    Some(&message),
+                );
+                return Err(AcpClientError::Protocol(message));
+            }
+        };
 
         let notification_service = Arc::clone(&self.service);
         let notification_job_id = request.job_id.clone();
@@ -262,10 +287,17 @@ impl AcpClient {
                     .unwrap_or_else(|| "unavailable".into());
                 let _ = self.service.record_agent_event(NewAgentEvent {
                     job_id: failure_job_id,
-                    session_id,
+                    session_id: session_id.clone(),
                     kind: NewAgentEventKind::SessionFailed,
                     message: error.to_string(),
                 });
+                let message = error.to_string();
+                let _ = self.service.finish_run_attempt(
+                    &attempt.attempt_id,
+                    AttemptStatus::Failed,
+                    (session_id != "unavailable").then_some(session_id.as_str()),
+                    Some(&message),
+                );
                 return Err(AcpClientError::Protocol(error.to_string()));
             }
         };
@@ -275,8 +307,27 @@ impl AcpClient {
             .expect("event error lock poisoned")
             .take()
         {
+            let _ = self.service.finish_run_attempt(
+                &attempt.attempt_id,
+                AttemptStatus::Failed,
+                Some(&result.session_id),
+                Some(&error),
+            );
             return Err(AcpClientError::Persistence(error));
         }
+        let status = match result.stop_reason.as_str() {
+            "end_turn" => AttemptStatus::Completed,
+            "cancelled" => AttemptStatus::Cancelled,
+            _ => AttemptStatus::Failed,
+        };
+        self.service
+            .finish_run_attempt(
+                &attempt.attempt_id,
+                status,
+                Some(&result.session_id),
+                (status == AttemptStatus::Failed).then_some(result.stop_reason.as_str()),
+            )
+            .map_err(|error| AcpClientError::Persistence(error.to_string()))?;
         Ok(result)
     }
 }

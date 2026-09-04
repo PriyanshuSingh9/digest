@@ -5,18 +5,19 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --background: oklch(1 0 0);
-  --surface: oklch(0.975 0.004 130);
-  --ink: oklch(0.2 0.018 130);
-  --muted: oklch(0.47 0.018 130);
-  --quiet: oklch(0.64 0.014 130);
-  --line: oklch(0.89 0.008 130);
-  --primary: oklch(0.49 0.13 130);
-  --primary-hover: oklch(0.43 0.13 130);
-  --accent: oklch(0.5 0.16 255);
-  --danger: oklch(0.53 0.19 25);
-  --danger-soft: oklch(0.96 0.025 25);
-  --focus: oklch(0.56 0.16 255);
+  color-scheme: dark;
+  --background: oklch(0.13 0.008 130);
+  --surface: oklch(0.18 0.01 130);
+  --ink: oklch(0.93 0.008 130);
+  --muted: oklch(0.72 0.012 130);
+  --quiet: oklch(0.56 0.014 130);
+  --line: oklch(0.28 0.012 130);
+  --primary: oklch(0.56 0.14 130);
+  --primary-hover: oklch(0.62 0.14 130);
+  --accent: oklch(0.7 0.14 255);
+  --danger: oklch(0.66 0.18 25);
+  --danger-soft: oklch(0.22 0.055 25);
+  --focus: oklch(0.7 0.14 255);
   --radius-sm: 6px;
   --radius-md: 10px;
   --duration: 180ms;
@@ -90,9 +91,9 @@ h3 { margin: 0; font-size: 0.9rem; }
   max-width: calc(1440px - 56px);
   margin: 0 auto 18px;
   padding: 12px 14px;
-  border: 1px solid oklch(0.84 0.07 25);
+  border: 1px solid oklch(0.46 0.1 25);
   border-radius: var(--radius-md);
-  color: oklch(0.35 0.13 25);
+  color: oklch(0.88 0.045 25);
   background: var(--danger-soft);
   display: flex;
   align-items: center;
@@ -217,6 +218,27 @@ dd {
 }
 .empty-state p { margin: 8px 0 0; color: var(--muted); font-size: 0.78rem; line-height: 1.55; }
 .event-list { margin: 0; padding: 0; list-style: none; }
+.attempt-strip {
+  margin: -10px 0 22px;
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+}
+.attempt {
+  min-width: max-content;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+}
+.attempt strong { color: var(--ink); }
+.attempt.completed .status-dot { background: var(--primary); }
+.attempt.failed .status-dot { background: var(--danger); }
+.attempt.running .status-dot { background: var(--accent); }
 .event-list li { position: relative; padding: 0 0 22px 26px; display: grid; }
 .event-list li:not(:last-child)::before {
   content: "";
@@ -276,7 +298,7 @@ dd {
   padding: 14px;
   overflow: auto;
   border-radius: var(--radius-sm);
-  color: oklch(0.31 0.035 130);
+  color: oklch(0.84 0.025 130);
   background: var(--surface);
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 0.7rem;

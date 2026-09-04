@@ -1,6 +1,6 @@
 use crate::{
-    AcpClient, AgentEvent, AgentProvider, AgentRunRequest, AgentRunResult, ArtifactEnvelope,
-    DigestService, McpLaunchSpec, PermissionPolicy,
+    AcpClient, AgentEvent, AgentProvider, AgentRunRequest, AgentRunResult, ArticleIngestionService,
+    ArtifactEnvelope, DigestService, McpLaunchSpec, PermissionPolicy, RunAttempt,
 };
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
@@ -18,6 +18,7 @@ pub struct StartAgentRun {
     pub job_id: String,
     pub provider: AgentProvider,
     pub cwd: PathBuf,
+    pub article_url: String,
     pub prompt: String,
     #[serde(default)]
     pub allow_once_permissions: bool,
@@ -26,6 +27,7 @@ pub struct StartAgentRun {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunSnapshot {
+    pub attempts: Vec<RunAttempt>,
     pub events: Vec<AgentEvent>,
     pub artifacts: Vec<ArtifactEnvelope>,
 }
@@ -48,9 +50,13 @@ pub fn host_info(state: State<'_, HostState>) -> HostInfo {
 #[tauri::command]
 pub fn run_snapshot(state: State<'_, HostState>, job_id: String) -> Result<RunSnapshot, String> {
     Ok(RunSnapshot {
+        attempts: state
+            .service
+            .list_run_attempts(&job_id)
+            .map_err(|error| error.to_string())?,
         events: state
             .service
-            .list_agent_events(&job_id)
+            .list_presentation_events(&job_id)
             .map_err(|error| error.to_string())?,
         artifacts: state
             .service
@@ -64,15 +70,21 @@ pub async fn start_agent_run(
     state: State<'_, HostState>,
     input: StartAgentRun,
 ) -> Result<AgentRunResult, String> {
+    let ingestion = ArticleIngestionService::new(Arc::clone(&state.service))
+        .ingest_url(&input.job_id, &input.article_url)
+        .await
+        .map_err(|error| error.to_string())?;
     let digest_mcp = McpLaunchSpec::new(state.executable.clone(), state.data_dir.clone())
         .map_err(|error| error.to_string())?
         .with_prefix_args(vec!["--digest-mcp".into()]);
     AcpClient::new(Arc::clone(&state.service))
         .run_once(AgentRunRequest {
             prompt: format!(
-                "The active Digest job ID is `{}` and the article ID for this evaluation is \
-                 `phase-0-evaluation`. Pass those exact identifiers to Digest MCP tools.\n\n{}",
-                input.job_id, input.prompt
+                "The active Digest job ID is `{}`. Digest already captured and normalized the \
+                 article. Read normalized article artifact `{}` with Digest MCP instead of \
+                 fetching the URL yourself. When writing analysis, use that artifact ID as the \
+                 article ID.\n\n{}",
+                input.job_id, ingestion.article.artifact_id, input.prompt
             ),
             job_id: input.job_id,
             provider: input.provider,
