@@ -6,16 +6,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
 
-const PRESENTATION_TYPES: &[&str] = &[
-    "article_text",
-    "callout",
-    "code",
-    "concept_card",
-    "diagram",
-    "image",
-    "quote",
-];
-
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteAnalysisInput {
@@ -63,7 +53,19 @@ pub struct NarrationSegmentDraft {
     pub display_text: String,
     pub tts_text: String,
     pub source_blocks: Vec<String>,
-    pub presentation_type: String,
+    pub presentation_type: PresentationType,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PresentationType {
+    ArticleText,
+    Callout,
+    Code,
+    ConceptCard,
+    Diagram,
+    Image,
+    Quote,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -155,7 +157,6 @@ impl DigestTools {
             if segment.display_text.trim().is_empty()
                 || segment.tts_text.trim().is_empty()
                 || segment.source_blocks.is_empty()
-                || !PRESENTATION_TYPES.contains(&segment.presentation_type.as_str())
             {
                 return Err(DigestError::InvalidInput(format!(
                     "narration segment {} is incomplete",

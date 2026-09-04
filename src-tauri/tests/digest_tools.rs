@@ -1,6 +1,6 @@
 use digest_lib::{
-    ArticleIngestionService, DigestService, DigestTools, NarrationSegmentDraft, ReadArtifactInput,
-    WriteAnalysisInput, WriteNarrationPlanInput,
+    ArticleIngestionService, DigestService, DigestTools, NarrationSegmentDraft, PresentationType,
+    ReadArtifactInput, WriteAnalysisInput, WriteNarrationPlanInput,
 };
 use std::sync::Arc;
 
@@ -53,7 +53,7 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 display_text: "io_uring submits work asynchronously.".into(),
                 tts_text: "eye-oh uring submits work asynchronously.".into(),
                 source_blocks: vec!["block-1".into()],
-                presentation_type: "article_text".into(),
+                presentation_type: PresentationType::ArticleText,
             }],
         })
         .expect("write narration plan");
@@ -79,9 +79,32 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 display_text: "Invented source.".into(),
                 tts_text: "Invented source.".into(),
                 source_blocks: vec!["block-99".into()],
-                presentation_type: "article_text".into(),
+                presentation_type: PresentationType::ArticleText,
             }],
         })
         .expect_err("unknown source blocks must be rejected");
     assert!(error.to_string().contains("block-99"));
+}
+
+#[test]
+fn narration_schema_publishes_supported_presentation_types() {
+    let schema = serde_json::to_value(schemars::schema_for!(WriteNarrationPlanInput))
+        .expect("serialize narration schema");
+    let encoded_schema = schema.to_string();
+    assert!(encoded_schema.contains("\"article-text\""));
+    assert!(encoded_schema.contains("\"concept-card\""));
+    let error = serde_json::from_value::<WriteNarrationPlanInput>(serde_json::json!({
+        "jobId": "job-1",
+        "articleId": "article-1",
+        "title": "Invalid plan",
+        "segments": [{
+            "displayText": "Display",
+            "ttsText": "Spoken",
+            "sourceBlocks": ["block-1"],
+            "presentationType": "narrative"
+        }]
+    }))
+    .expect_err("unsupported presentation type must fail at the tool boundary");
+    assert!(error.to_string().contains("unknown variant"));
+    assert!(error.to_string().contains("article-text"));
 }

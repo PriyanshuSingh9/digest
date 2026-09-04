@@ -11,8 +11,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use thiserror::Error;
+
+const AGENT_RUN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
@@ -184,7 +187,7 @@ impl AcpClient {
         let permission_policy = request.permission_policy;
         let lifecycle_service = Arc::clone(&self.service);
 
-        let result = agent_client_protocol::Client
+        let agent_run = agent_client_protocol::Client
             .builder()
             .on_receive_notification(
                 async move |notification: SessionNotification, _context| {
@@ -274,8 +277,35 @@ impl AcpClient {
                     session_id: session_id.to_string(),
                     stop_reason: stop_reason_name(response.stop_reason).into(),
                 })
-            })
-            .await;
+            });
+        let result = tokio::time::timeout(AGENT_RUN_TIMEOUT, agent_run).await;
+
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => {
+                let message = format!(
+                    "agent run exceeded the {} second limit",
+                    AGENT_RUN_TIMEOUT.as_secs()
+                );
+                let session_id = active_session
+                    .lock()
+                    .expect("active session lock poisoned")
+                    .clone();
+                let _ = self.service.record_agent_event(NewAgentEvent {
+                    job_id: failure_job_id.clone(),
+                    session_id: session_id.clone().unwrap_or_else(|| "unavailable".into()),
+                    kind: NewAgentEventKind::SessionFailed,
+                    message: message.clone(),
+                });
+                let _ = self.service.finish_run_attempt(
+                    &attempt.attempt_id,
+                    AttemptStatus::Failed,
+                    session_id.as_deref(),
+                    Some(&message),
+                );
+                return Err(AcpClientError::Protocol(message));
+            }
+        };
 
         let result = match result {
             Ok(result) => result,

@@ -106,6 +106,7 @@ pub fn configure_host(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
     let data_dir = app.path().app_data_dir()?;
     let executable = std::env::current_exe()?;
     let service = Arc::new(DigestService::open(&data_dir)?);
+    service.recover_abandoned_attempts()?;
     app.manage(HostState {
         service,
         data_dir,

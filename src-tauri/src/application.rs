@@ -228,6 +228,23 @@ impl DigestService {
         &self.data_dir
     }
 
+    pub fn recover_abandoned_attempts(&self) -> Result<usize, DigestError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "UPDATE run_attempts
+                 SET status = ?1, finished_at_ms = ?2, error = ?3
+                 WHERE status = ?4",
+                params![
+                    AttemptStatus::Failed.as_str(),
+                    now_ms(),
+                    "Digest host was interrupted before the attempt completed",
+                    AttemptStatus::Running.as_str(),
+                ],
+            )
+            .map_err(Into::into)
+    }
+
     pub fn write_analysis(&self, draft: AnalysisDraft) -> Result<ArtifactEnvelope, DigestError> {
         require_non_empty("jobId", &draft.job_id)?;
         require_non_empty("articleId", &draft.article_id)?;

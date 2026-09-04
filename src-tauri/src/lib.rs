@@ -19,8 +19,9 @@ pub use ingestion::{
 };
 pub use mcp::DigestMcpServer;
 pub use tools::{
-    DigestTools, IngestArticleInput, IngestArticleOutput, NarrationSegmentDraft, ReadArtifactInput,
-    ReadArtifactOutput, WriteAnalysisInput, WriteAnalysisOutput, WriteNarrationPlanInput,
+    DigestTools, IngestArticleInput, IngestArticleOutput, NarrationSegmentDraft, PresentationType,
+    ReadArtifactInput, ReadArtifactOutput, WriteAnalysisInput, WriteAnalysisOutput,
+    WriteNarrationPlanInput,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

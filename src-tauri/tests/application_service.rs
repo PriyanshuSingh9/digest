@@ -171,3 +171,31 @@ fn presentation_events_coalesce_streamed_text_chunks() {
     assert_eq!(events[0].kind, NewAgentEventKind::AgentMessage);
     assert_eq!(events[0].message, "Hello world");
 }
+
+#[test]
+fn reopening_the_service_marks_abandoned_attempts_as_failed() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = DigestService::open(directory.path()).expect("open Digest service");
+    service
+        .start_run_attempt(StartRunAttempt {
+            job_id: "job-interrupted".into(),
+            provider: "open_code".into(),
+        })
+        .expect("start attempt");
+    drop(service);
+
+    let reopened = DigestService::open(directory.path()).expect("reopen Digest service");
+    reopened
+        .recover_abandoned_attempts()
+        .expect("recover attempts at host startup");
+    let attempts = reopened
+        .list_run_attempts("job-interrupted")
+        .expect("list recovered attempts");
+
+    assert_eq!(attempts[0].status, AttemptStatus::Failed);
+    assert!(attempts[0]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("interrupted")));
+    assert!(attempts[0].finished_at_ms.is_some());
+}
