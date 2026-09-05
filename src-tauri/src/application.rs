@@ -96,6 +96,7 @@ pub enum NewAgentEventKind {
     ToolFailed,
     ArtifactCreated,
     SessionCompleted,
+    SessionCancelled,
     SessionFailed,
 }
 
@@ -111,6 +112,7 @@ impl NewAgentEventKind {
             Self::ToolFailed => "tool_failed",
             Self::ArtifactCreated => "artifact_created",
             Self::SessionCompleted => "session_completed",
+            Self::SessionCancelled => "session_cancelled",
             Self::SessionFailed => "session_failed",
         }
     }
@@ -126,6 +128,7 @@ impl NewAgentEventKind {
             "tool_failed" => Ok(Self::ToolFailed),
             "artifact_created" => Ok(Self::ArtifactCreated),
             "session_completed" => Ok(Self::SessionCompleted),
+            "session_cancelled" => Ok(Self::SessionCancelled),
             "session_failed" => Ok(Self::SessionFailed),
             other => Err(DigestError::InvalidInput(format!(
                 "unknown agent event kind: {other}"
@@ -493,12 +496,22 @@ impl DigestService {
 
     pub fn list_agent_events(&self, job_id: &str) -> Result<Vec<AgentEvent>, DigestError> {
         require_non_empty("jobId", job_id)?;
+        self.list_agent_events_after(job_id, None)
+    }
+
+    fn list_agent_events_after(
+        &self,
+        job_id: &str,
+        after_sequence: Option<i64>,
+    ) -> Result<Vec<AgentEvent>, DigestError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT sequence, job_id, session_id, kind, message, created_at_ms
-             FROM agent_events WHERE job_id = ?1 ORDER BY sequence",
+             FROM agent_events
+             WHERE job_id = ?1 AND (?2 IS NULL OR sequence > ?2)
+             ORDER BY sequence",
         )?;
-        let rows = statement.query_map([job_id], |row| {
+        let rows = statement.query_map(params![job_id, after_sequence], |row| {
             let kind: String = row.get(3)?;
             Ok((
                 row.get::<_, i64>(0)?,
@@ -525,7 +538,24 @@ impl DigestService {
     }
 
     pub fn list_presentation_events(&self, job_id: &str) -> Result<Vec<AgentEvent>, DigestError> {
-        let raw_events = self.list_agent_events(job_id)?;
+        self.project_presentation_events(self.list_agent_events(job_id)?)
+    }
+
+    pub fn list_presentation_events_after(
+        &self,
+        job_id: &str,
+        after_sequence: i64,
+    ) -> Result<Vec<AgentEvent>, DigestError> {
+        require_non_empty("jobId", job_id)?;
+        self.project_presentation_events(
+            self.list_agent_events_after(job_id, Some(after_sequence))?,
+        )
+    }
+
+    fn project_presentation_events(
+        &self,
+        raw_events: Vec<AgentEvent>,
+    ) -> Result<Vec<AgentEvent>, DigestError> {
         let mut events: Vec<AgentEvent> = Vec::with_capacity(raw_events.len());
         for mut event in raw_events {
             let is_streamed_text = matches!(
@@ -543,6 +573,8 @@ impl DigestService {
                 previous.session_id == event.session_id && previous.kind == event.kind
             }) {
                 previous.message.push_str(&text);
+                previous.sequence = event.sequence;
+                previous.created_at_ms = event.created_at_ms;
                 continue;
             }
             event.message = text;

@@ -1300,6 +1300,8 @@ For V1 packaging, the Linux application executable may expose an internal `--dig
 
 An evaluation run may authorize the agent's advertised one-time permission option only after explicit user consent. Digest must never automatically select a persistent permission option.
 
+Agent supervision is based on inactivity rather than a fixed total duration so that long, productive generations are not truncated. Any ACP notification or permission request resets the inactivity deadline. V1 defaults to a five-minute inactivity timeout through `DIGEST_AGENT_INACTIVITY_TIMEOUT_SECS`. A total runtime limit is disabled by default and may be enabled through `DIGEST_AGENT_MAX_RUNTIME_SECS`. Both values are positive integer seconds. The user may cancel an active run at any time; cancellation must mark the attempt as cancelled and persist terminal failure events for tool calls that were still in flight.
+
 In V2, Hermes connects to these same Digest MCP capabilities locally or over an authenticated remote transport. ACP may remain useful for diagnostics or an embedded chat surface, but V2 must not require the V1 Tauri host.
 
 ---
@@ -2410,12 +2412,12 @@ The first Phase 1 increment now provides:
 - a `write_narration_plan` MCP tool that keeps display text and TTS text separate, requires explicit segment provenance and source-block provenance, labels segment intent and importance, requires every source block and diagram to be taught, summarized, or skipped with a rationale, and emits coverage and compression-transparency diagnostics,
 - machine-readable narration presentation types in the MCP schema so agents can correct invalid tool arguments,
 - durable agent attempts with terminal status and provider-session linkage,
-- a five-minute ACP run deadline and host-startup recovery of attempts interrupted by a previous process,
-- raw canonical agent events plus a coalesced presentation-event projection,
+- activity-based ACP supervision with a configurable inactivity timeout, an optional total runtime limit that is disabled by default, user cancellation, terminal failure records for interrupted tool calls, and host-startup recovery of attempts interrupted by a previous process,
+- raw canonical agent events plus a cursor-based incremental presentation-event projection that coalesces streamed text without repeatedly transferring the complete run history,
 - explicit failed-tool events even when an ACP adapter reports an invalid tool invocation with a completed transport status,
 - narration validation that permits pronunciation normalization while rejecting substantial content additions or removals in TTS text,
 - retry behavior that reuses a job's latest immutable normalized article by default while retaining an explicit fresh-capture option,
-- a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, capture-quality summaries, media-localization summaries, and completion statistics computed from durable artifacts rather than agent prose.
+- a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, bounded-by-default expandable event previews, capture-quality summaries, media-localization summaries, and completion statistics computed from durable artifacts rather than agent prose. Preview bounds affect rendering only; complete agent output remains durably stored and inspectable.
 
 This checkpoint does **not** complete Phase 1. The next quality slice must turn narration plans into segmented audio and timing artifacts, define the playable manifest, integrate Kokoro as the primary local TTS provider, and render synchronized playback. Current readability scoring, boilerplate rules, and media selection are conservative first passes; responsive-candidate selection, Chromium fallback, a benchmark fixture corpus, DNS-rebinding defenses, and format-specific media decoding limits remain Phase 2 work.
 

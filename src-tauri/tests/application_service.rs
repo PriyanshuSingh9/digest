@@ -213,6 +213,15 @@ fn presentation_events_coalesce_streamed_text_chunks() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].kind, NewAgentEventKind::AgentMessage);
     assert_eq!(events[0].message, "Hello world");
+    assert_eq!(events[0].sequence, 2);
+
+    let incremental = service
+        .list_presentation_events_after("job-1", 1)
+        .expect("list only presentation events after the cursor");
+    assert_eq!(incremental.len(), 2);
+    assert_eq!(incremental[0].message, " world");
+    assert_eq!(incremental[0].sequence, 2);
+    assert_eq!(incremental[1].kind, NewAgentEventKind::SessionCompleted);
 }
 
 #[test]

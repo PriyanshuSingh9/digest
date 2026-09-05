@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -35,7 +35,12 @@ type RunSnapshot = {
   events: AgentEvent[];
   artifacts: Artifact[];
 };
-type HostInfo = { dataDir: string; mcpExecutable: string };
+type HostInfo = {
+  dataDir: string;
+  mcpExecutable: string;
+  agentInactivityTimeoutSeconds: number;
+  agentMaxRuntimeSeconds: number | null;
+};
 type AgentRunResult = { sessionId: string; stopReason: string };
 type ExtractionDiagnostics = {
   confidence: number;
@@ -74,6 +79,7 @@ type RunMetrics = {
 };
 
 const EMPTY_SNAPSHOT: RunSnapshot = { attempts: [], events: [], artifacts: [] };
+const EVENT_PREVIEW_LENGTH = 1600;
 const freshJobId = () => `evaluation-${crypto.randomUUID().slice(0, 8)}`;
 const eventLabel = (kind: string) =>
   kind
@@ -100,6 +106,53 @@ function conciseMessage(event: AgentEvent) {
   return eventLabel(event.kind);
 }
 
+function mergeEventUpdates(current: AgentEvent[], updates: AgentEvent[]) {
+  const merged = [...current];
+  for (const update of updates) {
+    const previous = merged[merged.length - 1];
+    const isStreamedText =
+      update.kind === "agent_message" || update.kind === "agent_thinking";
+    if (
+      isStreamedText &&
+      previous?.sessionId === update.sessionId &&
+      previous.kind === update.kind
+    ) {
+      merged[merged.length - 1] = {
+        ...update,
+        message: previous.message + update.message,
+      };
+    } else {
+      merged.push(update);
+    }
+  }
+  return merged;
+}
+
+function ActivityMessage({ event }: { event: AgentEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const message = conciseMessage(event);
+  const needsPreview = message.length > EVENT_PREVIEW_LENGTH;
+  const visibleMessage =
+    needsPreview && !expanded
+      ? `${message.slice(0, EVENT_PREVIEW_LENGTH)}…`
+      : message;
+
+  return (
+    <>
+      <p>{visibleMessage}</p>
+      {needsPreview && (
+        <button
+          className="event-expand"
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "Collapse" : `Show all ${message.length.toLocaleString()} characters`}
+        </button>
+      )}
+    </>
+  );
+}
+
 function App() {
   const [host, setHost] = useState<HostInfo | null>(null);
   const [jobId, setJobId] = useState(freshJobId);
@@ -114,10 +167,13 @@ function App() {
   const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [allowOncePermissions, setAllowOncePermissions] = useState(false);
   const [refreshSource, setRefreshSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AgentRunResult | null>(null);
+  const eventCursor = useRef<number | null>(null);
 
   const activeArtifact = useMemo(
     () =>
@@ -191,10 +247,25 @@ function App() {
     };
   }, [snapshot]);
 
-  async function refreshSnapshot(id = jobId) {
+  async function refreshSnapshot(id = jobId, incremental = false) {
     if (!id.trim()) return;
     try {
-      setSnapshot(await invoke<RunSnapshot>("run_snapshot", { jobId: id }));
+      const afterEventSequence = incremental ? eventCursor.current : null;
+      const loaded = await invoke<RunSnapshot>("run_snapshot", {
+        jobId: id,
+        afterEventSequence,
+      });
+      if (incremental && afterEventSequence !== null) {
+        setSnapshot((current) => ({
+          ...loaded,
+          events: mergeEventUpdates(current.events, loaded.events),
+        }));
+      } else {
+        setSnapshot(loaded);
+      }
+      eventCursor.current =
+        loaded.events[loaded.events.length - 1]?.sequence ??
+        afterEventSequence;
     } catch (reason) {
       setError(String(reason));
     }
@@ -213,9 +284,12 @@ function App() {
     setError(null);
     setResult(null);
     setSelectedArtifact(null);
+    eventCursor.current = null;
     try {
       const loaded = await invoke<RunSnapshot>("run_snapshot", { jobId: id });
       setSnapshot(loaded);
+      eventCursor.current =
+        loaded.events[loaded.events.length - 1]?.sequence ?? null;
       const article = [...loaded.artifacts]
         .reverse()
         .find((artifact) => artifact.kind === "normalized_article");
@@ -231,6 +305,7 @@ function App() {
   function createRun() {
     setJobId(freshJobId());
     setSnapshot(EMPTY_SNAPSHOT);
+    eventCursor.current = null;
     setSelectedArtifact(null);
     setResult(null);
     setError(null);
@@ -251,18 +326,30 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!running) return;
-    const poll = window.setInterval(() => void refreshSnapshot(), 700);
-    return () => window.clearInterval(poll);
-  }, [jobId, running]);
+    if (!running || !activeJobId) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await refreshSnapshot(activeJobId, true);
+      if (!stopped) timer = window.setTimeout(poll, 700);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeJobId, running]);
 
   async function startRun(event: FormEvent) {
     event.preventDefault();
+    const runJobId = jobId;
     setError(null);
     setResult(null);
     setSnapshot(EMPTY_SNAPSHOT);
+    eventCursor.current = null;
     setSelectedArtifact(null);
     setRunning(true);
+    setActiveJobId(runJobId);
     const providerInput =
       provider === "open_code"
         ? { provider: "open_code" }
@@ -272,7 +359,7 @@ function App() {
       setResult(
         await invoke<AgentRunResult>("start_agent_run", {
           input: {
-            jobId,
+            jobId: runJobId,
             cwd,
             articleUrl,
             prompt,
@@ -286,8 +373,22 @@ function App() {
       setError(String(reason));
     } finally {
       setRunning(false);
-      await refreshSnapshot();
+      setActiveJobId(null);
+      setCancelling(false);
+      await refreshSnapshot(runJobId);
       await refreshRecentRuns();
+    }
+  }
+
+  async function cancelRun() {
+    if (!activeJobId) return;
+    setCancelling(true);
+    setError(null);
+    try {
+      await invoke("cancel_agent_run", { jobId: activeJobId });
+    } catch (reason) {
+      setCancelling(false);
+      setError(String(reason));
     }
   }
 
@@ -470,12 +571,31 @@ function App() {
               are never granted.
             </span>
           </label>
-          <button className="primary-button" disabled={running || !host || !allowOncePermissions}>
-            {running ? "Agent is running…" : "Start evaluation"}
-          </button>
+          {running ? (
+            <button
+              className="danger-button"
+              type="button"
+              onClick={() => void cancelRun()}
+              disabled={cancelling}
+            >
+              {cancelling ? "Cancelling run…" : "Cancel run"}
+            </button>
+          ) : (
+            <button className="primary-button" disabled={!host || !allowOncePermissions}>
+              Start evaluation
+            </button>
+          )}
           <dl className="host-details">
             <div><dt>Artifact store</dt><dd title={host?.dataDir}>{host?.dataDir ?? "Unavailable"}</dd></div>
             <div><dt>MCP transport</dt><dd>stdio · bundled host</dd></div>
+            <div>
+              <dt>Inactivity timeout</dt>
+              <dd>{host ? `${host.agentInactivityTimeoutSeconds}s` : "Unavailable"}</dd>
+            </div>
+            <div>
+              <dt>Maximum runtime</dt>
+              <dd>{host?.agentMaxRuntimeSeconds ? `${host.agentMaxRuntimeSeconds}s` : "Disabled"}</dd>
+            </div>
           </dl>
         </form>
 
@@ -514,7 +634,7 @@ function App() {
                       <strong>{eventLabel(event.kind)}</strong>
                       <time dateTime={new Date(event.createdAtMs).toISOString()}>{new Date(event.createdAtMs).toLocaleTimeString()}</time>
                     </div>
-                    <p>{conciseMessage(event)}</p>
+                    <ActivityMessage event={event} />
                   </div>
                 </li>
               ))}

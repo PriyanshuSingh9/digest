@@ -6,8 +6,8 @@ mod mcp;
 mod tools;
 
 pub use acp::{
-    AcpClient, AcpClientError, AgentLaunchSpec, AgentProvider, AgentRunRequest, AgentRunResult,
-    McpLaunchSpec, PermissionPolicy,
+    AcpClient, AcpClientError, AgentLaunchSpec, AgentProvider, AgentRunCancellation,
+    AgentRunRequest, AgentRunResult, AgentRunSupervision, McpLaunchSpec, PermissionPolicy,
 };
 pub use application::{
     AgentEvent, AnalysisDraft, ArtifactEnvelope, ArtifactKind, AttemptStatus, DigestError,
@@ -33,6 +33,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(host::configure_host)
         .invoke_handler(tauri::generate_handler![
+            host::cancel_agent_run,
             host::host_info,
             host::recent_runs,
             host::run_snapshot,

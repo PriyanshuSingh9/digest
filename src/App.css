@@ -213,7 +213,7 @@ input:hover, select:hover, textarea:hover { border-color: var(--quiet); }
 input:focus, select:focus, textarea:focus { border-color: var(--focus); }
 .inline-control { display: flex; gap: 7px; }
 .field-help { color: var(--muted); font-size: 0.72rem; font-weight: 450; line-height: 1.45; }
-.primary-button, .secondary-button {
+.primary-button, .secondary-button, .danger-button {
   border-radius: var(--radius-sm);
   font-size: 0.78rem;
   font-weight: 680;
@@ -226,7 +226,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); }
   background: var(--primary);
 }
 .primary-button:hover:not(:disabled) { border-color: var(--primary-hover); background: var(--primary-hover); }
-.primary-button:active:not(:disabled), .secondary-button:active:not(:disabled) { transform: translateY(1px); }
+.primary-button:active:not(:disabled), .secondary-button:active:not(:disabled), .danger-button:active:not(:disabled) { transform: translateY(1px); }
+.danger-button {
+  min-height: 39px;
+  border: 1px solid oklch(0.46 0.1 25);
+  color: oklch(0.9 0.04 25);
+  background: var(--danger-soft);
+}
+.danger-button:hover:not(:disabled) { border-color: var(--danger); }
 .permission-control {
   flex-direction: row;
   align-items: flex-start;
@@ -313,6 +320,7 @@ dd {
 .attempt.failed .status-dot { background: var(--danger); }
 .attempt.running .status-dot { background: var(--accent); }
 .event-list li { position: relative; padding: 0 0 22px 26px; display: grid; }
+.event-list li > div { min-width: 0; }
 .event-list li:not(:last-child)::before {
   content: "";
   position: absolute;
@@ -336,6 +344,7 @@ dd {
 }
 .event-indicator.session_started, .event-indicator.session_completed, .event-indicator.artifact_created { background: var(--primary); }
 .event-indicator.session_failed, .event-indicator.tool_failed { background: var(--danger); }
+.event-indicator.session_cancelled { background: var(--quiet); }
 .event-indicator.tool_started, .event-indicator.tool_progress, .event-indicator.tool_completed { background: var(--accent); }
 .event-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .event-meta strong { font-size: 0.76rem; }
@@ -343,10 +352,20 @@ dd {
 .event-list p {
   max-width: 68ch;
   margin: 5px 0 0;
+  overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 0.76rem;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+.event-expand {
+  margin: 7px 0 0;
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: 0.68rem;
+  text-align: left;
 }
 
 .artifact-empty { padding: 14px; border-radius: var(--radius-sm); color: var(--muted); background: var(--surface); font-size: 0.76rem; line-height: 1.5; }

@@ -27,7 +27,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 sha2 = "0.10"
 thiserror = "2"
 schemars = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
 rmcp = { version = "3.2", features = ["server", "transport-io"] }
 agent-client-protocol = "2.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
