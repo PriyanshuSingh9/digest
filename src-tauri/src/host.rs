@@ -1,11 +1,13 @@
 use crate::{
     AcpClient, AgentEvent, AgentProvider, AgentRunCancellation, AgentRunRequest, AgentRunResult,
-    AgentRunSupervision, ArticleIngestionService, ArtifactEnvelope, ArtifactKind, DigestService,
-    McpLaunchSpec, PermissionPolicy, RunAttempt, RunSummary,
+    AgentRunSupervision, ArticleIngestionService, ArtifactEnvelope, ArtifactKind,
+    AudioCancellation, AudioGenerationProgress, AudioGenerationRequest, AudioGenerationService,
+    AudioProvider, DigestService, GenerateAudioResult, KokoroProvider, McpLaunchSpec,
+    PermissionPolicy, RunAttempt, RunSummary,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -18,6 +20,7 @@ pub struct HostState {
     executable: PathBuf,
     supervision: AgentRunSupervision,
     active_runs: Mutex<HashMap<String, AgentRunCancellation>>,
+    active_audio_generations: Mutex<HashMap<String, AudioCancellation>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,18 +52,63 @@ pub struct HostInfo {
     pub mcp_executable: PathBuf,
     pub agent_inactivity_timeout_seconds: u64,
     pub agent_max_runtime_seconds: Option<u64>,
+    pub kokoro_endpoint: String,
+    pub audio_provider: String,
+    pub audio_default_voice: String,
 }
 
-struct ActiveRunGuard<'a> {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateAudio {
+    pub job_id: String,
+    #[serde(default)]
+    pub voice: Option<String>,
+    #[serde(default = "default_audio_speed")]
+    pub speed: f32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegenerateSegmentAudio {
+    pub job_id: String,
+    pub segment_id: String,
+    #[serde(default)]
+    pub voice: Option<String>,
+    #[serde(default = "default_audio_speed")]
+    pub speed: f32,
+}
+
+struct ActiveJobGuard<'a, T> {
     job_id: String,
-    active_runs: &'a Mutex<HashMap<String, AgentRunCancellation>>,
+    active: &'a Mutex<HashMap<String, T>>,
 }
 
-impl Drop for ActiveRunGuard<'_> {
+impl<'a, T> ActiveJobGuard<'a, T> {
+    /// Registers `entry` for `job_id`, refusing a second concurrent entry,
+    /// and removes it again when the guard drops.
+    fn register(
+        active: &'a Mutex<HashMap<String, T>>,
+        job_id: &str,
+        entry: T,
+        activity: &str,
+    ) -> Result<Self, String> {
+        let mut entries = active.lock().expect("active job lock poisoned");
+        if entries.contains_key(job_id) {
+            return Err(format!("{activity} is already active for job {job_id}"));
+        }
+        entries.insert(job_id.into(), entry);
+        Ok(Self {
+            job_id: job_id.into(),
+            active,
+        })
+    }
+}
+
+impl<T> Drop for ActiveJobGuard<'_, T> {
     fn drop(&mut self) {
-        self.active_runs
+        self.active
             .lock()
-            .expect("active runs lock poisoned")
+            .expect("active job lock poisoned")
             .remove(&self.job_id);
     }
 }
@@ -75,7 +123,100 @@ pub fn host_info(state: State<'_, HostState>) -> HostInfo {
             .supervision
             .max_runtime
             .map(|duration| duration.as_secs()),
+        kokoro_endpoint: kokoro_endpoint(),
+        audio_provider: audio_provider().name().into(),
+        audio_default_voice: audio_provider().default_voice().into(),
     }
+}
+
+#[tauri::command]
+pub async fn generate_audio(
+    state: State<'_, HostState>,
+    input: GenerateAudio,
+    on_progress: tauri::ipc::Channel<AudioGenerationProgress>,
+) -> Result<GenerateAudioResult, String> {
+    run_audio_generation(
+        &state,
+        &input.job_id,
+        input.voice,
+        input.speed,
+        HashSet::new(),
+        on_progress,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn regenerate_segment_audio(
+    state: State<'_, HostState>,
+    input: RegenerateSegmentAudio,
+    on_progress: tauri::ipc::Channel<AudioGenerationProgress>,
+) -> Result<GenerateAudioResult, String> {
+    run_audio_generation(
+        &state,
+        &input.job_id,
+        input.voice,
+        input.speed,
+        HashSet::from([input.segment_id]),
+        on_progress,
+    )
+    .await
+}
+
+async fn run_audio_generation(
+    state: &HostState,
+    job_id: &str,
+    voice: Option<String>,
+    speed: f32,
+    regenerate_segment_ids: HashSet<String>,
+    on_progress: tauri::ipc::Channel<AudioGenerationProgress>,
+) -> Result<GenerateAudioResult, String> {
+    let cancellation = AudioCancellation::new();
+    let _active = ActiveJobGuard::register(
+        &state.active_audio_generations,
+        job_id,
+        cancellation.clone(),
+        "audio generation",
+    )?;
+    let provider = audio_provider();
+    let request = AudioGenerationRequest {
+        voice: voice
+            .filter(|voice| !voice.trim().is_empty())
+            .unwrap_or_else(|| provider.default_voice().into()),
+        speed,
+        regenerate_segment_ids,
+    };
+    AudioGenerationService::new(Arc::clone(&state.service), provider)
+        .generate(job_id, &request, &cancellation, |event| {
+            let _ = on_progress.send(event);
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_audio_generation(state: State<'_, HostState>, job_id: String) -> Result<(), String> {
+    let active = state
+        .active_audio_generations
+        .lock()
+        .expect("active job lock poisoned");
+    let cancellation = active
+        .get(&job_id)
+        .ok_or_else(|| format!("no audio generation is active for job {job_id}"))?;
+    cancellation.cancel();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn audio_asset(
+    state: State<'_, HostState>,
+    artifact_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    state
+        .service
+        .read_binary_artifact(&artifact_id)
+        .map(tauri::ipc::Response::new)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -120,20 +261,12 @@ pub async fn start_agent_run(
     input: StartAgentRun,
 ) -> Result<AgentRunResult, String> {
     let cancellation = AgentRunCancellation::new();
-    {
-        let mut active_runs = state.active_runs.lock().expect("active runs lock poisoned");
-        if active_runs.contains_key(&input.job_id) {
-            return Err(format!(
-                "an agent run is already active for job {}",
-                input.job_id
-            ));
-        }
-        active_runs.insert(input.job_id.clone(), cancellation.clone());
-    }
-    let _active_run = ActiveRunGuard {
-        job_id: input.job_id.clone(),
-        active_runs: &state.active_runs,
-    };
+    let _active_run = ActiveJobGuard::register(
+        &state.active_runs,
+        &input.job_id,
+        cancellation.clone(),
+        "an agent run",
+    )?;
     let article = if input.refresh_source {
         None
     } else {
@@ -197,7 +330,7 @@ pub async fn start_agent_run(
 
 #[tauri::command]
 pub fn cancel_agent_run(state: State<'_, HostState>, job_id: String) -> Result<(), String> {
-    let active_runs = state.active_runs.lock().expect("active runs lock poisoned");
+    let active_runs = state.active_runs.lock().expect("active job lock poisoned");
     let cancellation = active_runs
         .get(&job_id)
         .ok_or_else(|| format!("no agent run is active for job {job_id}"))?;
@@ -217,6 +350,7 @@ pub fn configure_host(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
         executable,
         supervision,
         active_runs: Mutex::new(HashMap::new()),
+        active_audio_generations: Mutex::new(HashMap::new()),
     });
     Ok(())
 }
@@ -245,4 +379,22 @@ fn duration_from_environment(
         return Err(format!("{name} must be greater than zero").into());
     }
     Ok(Some(Duration::from_secs(seconds)))
+}
+
+/// Kokoro's local OpenAI-compatible speech server is the primary audio
+/// provider. Any future provider must deliver the same durable contract:
+/// a container `durable_audio_duration_ms` can independently time.
+fn audio_provider() -> KokoroProvider {
+    KokoroProvider::new(kokoro_endpoint())
+}
+
+fn kokoro_endpoint() -> String {
+    std::env::var("DIGEST_KOKORO_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:3000".into())
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+fn default_audio_speed() -> f32 {
+    1.0
 }

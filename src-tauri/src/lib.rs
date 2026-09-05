@@ -1,5 +1,6 @@
 mod acp;
 mod application;
+mod audio;
 mod host;
 mod ingestion;
 mod mcp;
@@ -13,6 +14,11 @@ pub use application::{
     AgentEvent, AnalysisDraft, ArtifactEnvelope, ArtifactKind, AttemptStatus, DigestError,
     DigestService, NewAgentEvent, NewAgentEventKind, RunAttempt, RunStatus, RunSummary,
     StartRunAttempt,
+};
+pub use audio::{
+    durable_audio_duration_ms, split_into_sentence_parts, AudioCancellation, AudioError,
+    AudioGenerationProgress, AudioGenerationRequest, AudioGenerationService, AudioProvider,
+    AudioRequest, GenerateAudioResult, KokoroProvider,
 };
 pub use ingestion::{
     ArticleBlock, ArticleImage, ArticleIngestionService, ExtractionDiagnostics, ImageCaptureStatus,
@@ -33,9 +39,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(host::configure_host)
         .invoke_handler(tauri::generate_handler![
+            host::audio_asset,
             host::cancel_agent_run,
+            host::cancel_audio_generation,
+            host::generate_audio,
             host::host_info,
             host::recent_runs,
+            host::regenerate_segment_audio,
             host::run_snapshot,
             host::start_agent_run
         ])

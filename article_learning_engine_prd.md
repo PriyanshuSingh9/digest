@@ -911,14 +911,23 @@ Providers:
 
 ```text
 AudioProvider
- ├── KokoroProvider
- ├── PiperProvider
- └── GoogleTtsProvider
+ ├── KokoroProvider      (primary, local)
+ ├── PiperProvider       (deferred)
+ └── GoogleTtsProvider   (deferred)
 ```
+
+Every provider adapter delivers a durable, WebView-playable compressed
+container — Ogg Opus today — and declares its MIME type.
+The generation service derives each segment's duration from the returned
+container bytes themselves (RFC 7845 granule positions minus pre-skip for Ogg
+Opus, RIFF metadata for WAV) before committing the playback manifest, and
+rejects formats it cannot independently time. Provider-reported durations are
+never trusted.
 
 ## 17.1 Kokoro
 
-Primary local TTS provider.
+Primary provider. Kokoro speaks the generic OpenAI-compatible speech API, so
+its adapter also maps onto other servers exposing that contract.
 
 Use for:
 
@@ -926,33 +935,30 @@ Use for:
 - higher-quality local narration,
 - OCI experimentation.
 
+The V1 client connects to Kokoro's OpenAI-compatible speech API at
+`http://127.0.0.1:3000` by default. Set `DIGEST_KOKORO_URL` before starting
+Tauri to use another local or remote endpoint. Digest requests non-streaming
+Ogg Opus output (Kokoros encodes 64 kbps mono server-side) and never stores
+credentials in the playback manifest.
+
 ---
 
 ## 17.2 Piper
 
-Low-resource local fallback.
-
-Use when:
-
-- Kokoro is unavailable,
-- resource consumption is too high,
-- fast synthesis is preferable,
-- running under constrained hardware.
+Deferred low-resource local fallback. Piper emits WAV/PCM only, so its
+adapter must transcode to the durable compressed format locally; that cost
+stays inside the adapter and does not change the manifest, caching, or
+playback contracts.
 
 ---
 
 ## 17.3 Google Cloud TTS
 
-Cloud provider.
-
-Use for:
-
-- fallback,
-- quality comparison,
-- optional higher-quality generation,
-- provider benchmarking.
-
-Cloud credentials must never be embedded into manifests.
+Deferred cloud provider. Its `text:synthesize` API is bespoke to Google, so
+an adapter is only justified once cloud generation, quality comparison, or
+provider benchmarking is actually needed; it must deliver the same durable
+Ogg Opus contract. Cloud credentials must never be embedded into manifests
+or any durable artifact.
 
 ---
 
@@ -1687,7 +1693,9 @@ hash(
 )
 ```
 
-TTS provider identity and model/version must be part of the cache key.
+TTS provider identity, the durable container MIME type, and model/version
+must be part of the cache key, so switching provider or durable format
+regenerates audio instead of reusing an incompatible cached segment.
 
 ---
 
@@ -1747,11 +1755,11 @@ Retry only that segment
 
 Kokoro unavailable
         ↓
-Try Piper
+Use another configured provider, if any
 
-Local TTS unavailable
+Audio generation cancelled or provider fails mid-lesson
         ↓
-Use Google TTS if configured
+Keep completed segments cached; resume at the segment boundary
 
 Agent interruption
         ↓
@@ -2052,9 +2060,9 @@ Filesystem
 ## TTS
 
 ```text
-Kokoro
-Piper
-Google Cloud TTS
+Kokoro (primary)
+Piper (deferred)
+Google Cloud TTS (deferred)
 ```
 
 ## Delivery
@@ -2417,9 +2425,15 @@ The first Phase 1 increment now provides:
 - explicit failed-tool events even when an ACP adapter reports an invalid tool invocation with a completed transport status,
 - narration validation that permits pronunciation normalization while rejecting substantial content additions or removals in TTS text,
 - retry behavior that reuses a job's latest immutable normalized article by default while retaining an explicit fresh-capture option,
+- a provider-neutral audio-generation boundary with Kokoro's local OpenAI-compatible speech endpoint as the primary provider, durable per-segment Ogg Opus artifacts (roughly a tenth of the earlier WAV size), retry-safe format-aware segment caching, and a versioned playback manifest (`1.1`) that records each segment's MIME type and deterministic timing derived by Digest from the container bytes rather than provider-reported numbers,
+- segment-boundary generation progress streamed to the UI over a Tauri IPC channel, plus user cancellation that preserves every completed cached segment and never commits a partial manifest,
+- sentence-boundary transport subdivision of narration segments (a transport rule, never a content limit: concatenated parts preserve the complete TTS text, and short fragments merge so abbreviations never become degenerate synthesis requests), giving per-sentence durable artifacts, part-level caching so editing one sentence regenerates only that sentence, and per-part timing in a `1.2` playback manifest that serves as the sentence-level alignment layer,
+- per-segment forced regeneration through a dedicated command that bypasses the cache for the named segment only, with newest-artifact-wins cache resolution so regenerated audio stays in effect on later passes,
+- player transcript with auto-scroll to the active segment, keyboard controls (space, arrow seeking, segment stepping), part-granular seeking, and a per-segment regenerate control; manifests from schemas 1.0/1.1 still play through the same normalized clip model,
+- a manifest-only React player that streams audio artifacts over raw Tauri IPC and derives active text, seeking, navigation, and playback-speed state from the audio clock without involving an agent,
 - a dark Chromium/WebView-oriented evaluation interface with durable recent-run navigation, bounded-by-default expandable event previews, capture-quality summaries, media-localization summaries, and completion statistics computed from durable artifacts rather than agent prose. Preview bounds affect rendering only; complete agent output remains durably stored and inspectable.
 
-This checkpoint does **not** complete Phase 1. The next quality slice must turn narration plans into segmented audio and timing artifacts, define the playable manifest, integrate Kokoro as the primary local TTS provider, and render synchronized playback. Current readability scoring, boilerplate rules, and media selection are conservative first passes; responsive-candidate selection, Chromium fallback, a benchmark fixture corpus, DNS-rebinding defenses, and format-specific media decoding limits remain Phase 2 work.
+This checkpoint does **not** complete Phase 1. Audio alignment now reaches sentence granularity through transport parts; word-level timing remains open because the Kokoros HTTP API exposes no timestamps (its timestamped ONNX model and TSV sidecars are CLI-only), so word alignment awaits either an HTTP extension upstream or a CLI-based provider. Managed Kokoro lifecycle/idle shutdown also remains future work. Current readability scoring, boilerplate rules, and media selection are conservative first passes; responsive-candidate selection, Chromium fallback, a benchmark fixture corpus, DNS-rebinding defenses, and format-specific media decoding limits remain Phase 2 work.
 
 ---
 
@@ -2484,7 +2498,7 @@ Deliver:
 
 - AudioProvider abstraction,
 - Kokoro primary provider,
-- Piper fallback,
+- optional Piper fallback,
 - optional Google Cloud TTS,
 - segment generation and caching,
 - word/sentence/paragraph alignment fallback,
@@ -2589,9 +2603,9 @@ V1 is complete when:
 
 ### TTS
 
-- [ ] Kokoro works.
-- [ ] Piper works.
-- [ ] Google TTS works when configured.
+- [ ] Kokoro works (primary).
+- [ ] Piper works (deferred).
+- [ ] Google TTS works when configured (deferred).
 - [ ] Provider abstraction exists.
 - [ ] Audio is cached.
 - [ ] Segment-level regeneration works.

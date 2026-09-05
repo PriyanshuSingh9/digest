@@ -45,6 +45,8 @@ pub enum ArtifactKind {
     NormalizedArticle,
     ImageAsset,
     NarrationPlan,
+    AudioSegment,
+    PlaybackManifest,
 }
 
 impl ArtifactKind {
@@ -55,6 +57,8 @@ impl ArtifactKind {
             Self::NormalizedArticle => "normalized_article",
             Self::ImageAsset => "image_asset",
             Self::NarrationPlan => "narration_plan",
+            Self::AudioSegment => "audio_segment",
+            Self::PlaybackManifest => "playback_manifest",
         }
     }
 
@@ -65,6 +69,8 @@ impl ArtifactKind {
             "normalized_article" => Ok(Self::NormalizedArticle),
             "image_asset" => Ok(Self::ImageAsset),
             "narration_plan" => Ok(Self::NarrationPlan),
+            "audio_segment" => Ok(Self::AudioSegment),
+            "playback_manifest" => Ok(Self::PlaybackManifest),
             other => Err(DigestError::InvalidInput(format!(
                 "unknown artifact kind: {other}"
             ))),
@@ -434,12 +440,28 @@ impl DigestService {
             .ok_or_else(|| DigestError::ArtifactNotFound(artifact_id.into()))
     }
 
+    pub fn read_binary_artifact(&self, artifact_id: &str) -> Result<Vec<u8>, DigestError> {
+        let artifact = self.read_artifact(artifact_id)?;
+        if !matches!(
+            artifact.kind,
+            ArtifactKind::AudioSegment | ArtifactKind::ImageAsset
+        ) {
+            return Err(DigestError::InvalidInput(format!(
+                "artifact {artifact_id} does not contain binary media"
+            )));
+        }
+        Ok(fs::read(
+            self.objects_dir
+                .join(format!("{}.bin", artifact.content_hash)),
+        )?)
+    }
+
     pub fn list_artifacts(&self, job_id: &str) -> Result<Vec<ArtifactEnvelope>, DigestError> {
         require_non_empty("jobId", job_id)?;
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT artifact_id, schema_version, job_id, kind, content_hash, created_at_ms, payload_json
-             FROM artifacts WHERE job_id = ?1 ORDER BY created_at_ms, artifact_id",
+             FROM artifacts WHERE job_id = ?1 ORDER BY rowid",
         )?;
         let rows = statement.query_map([job_id], artifact_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -812,7 +834,7 @@ fn streamed_text(message: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

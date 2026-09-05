@@ -1,5 +1,12 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 type Provider = "open_code" | "agy";
@@ -40,8 +47,49 @@ type HostInfo = {
   mcpExecutable: string;
   agentInactivityTimeoutSeconds: number;
   agentMaxRuntimeSeconds: number | null;
+  kokoroEndpoint: string;
+  audioProvider: string;
+  audioDefaultVoice: string;
 };
 type AgentRunResult = { sessionId: string; stopReason: string };
+type AudioProgress = {
+  totalSegments: number;
+  completedSegments: number;
+  generatedSegmentCount: number;
+  reusedSegmentCount: number;
+  currentSegmentId: string | null;
+};
+type PlaybackPart = {
+  startMs: number;
+  endMs: number;
+  mimeType?: string;
+  audioArtifactId: string;
+  text?: string;
+};
+type PlaybackSegment = {
+  id: string;
+  startMs: number;
+  endMs: number;
+  /** Sentence-level transport parts (manifest schema 1.2+). */
+  parts?: PlaybackPart[];
+  /** Single-artifact segments from manifest schemas 1.0/1.1. */
+  mimeType?: string;
+  audioArtifactId?: string;
+  displayText: string;
+  sourceBlocks: string[];
+  presentation: { type?: string };
+};
+type PlaybackClip = PlaybackPart & { segmentIndex: number };
+type PlaybackManifest = {
+  title: string;
+  audio: {
+    provider: string;
+    voice: string;
+    speed: number;
+    durationMs: number;
+  };
+  segments: PlaybackSegment[];
+};
 type ExtractionDiagnostics = {
   confidence: number;
   wordCount: number;
@@ -153,6 +201,305 @@ function ActivityMessage({ event }: { event: AgentEvent }) {
   );
 }
 
+function formatClock(milliseconds: number) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function LessonPlayer({
+  manifest,
+  onRegenerateSegment,
+  regenerationDisabled,
+}: {
+  manifest: PlaybackManifest;
+  onRegenerateSegment: (segmentId: string) => void;
+  regenerationDisabled: boolean;
+}) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const activeTranscriptRef = useRef<HTMLLIElement>(null);
+  const pendingSeek = useRef(0);
+  const wantsPlayback = useRef(false);
+  const [clipIndex, setClipIndex] = useState(0);
+  const [currentMs, setCurrentMs] = useState(0);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // One playable clip per sentence part; legacy manifests (1.0/1.1) carry a
+  // single artifact per segment and normalize to one clip.
+  const clips = useMemo<PlaybackClip[]>(
+    () =>
+      manifest.segments.flatMap((segment, segmentIndex) =>
+        (segment.parts && segment.parts.length > 0
+          ? segment.parts
+          : [
+              {
+                startMs: segment.startMs,
+                endMs: segment.endMs,
+                mimeType: segment.mimeType,
+                audioArtifactId: segment.audioArtifactId ?? "",
+              },
+            ]
+        ).map((part) => ({ ...part, segmentIndex })),
+      ),
+    [manifest],
+  );
+  const clip = clips[Math.min(clipIndex, clips.length - 1)];
+  const segmentIndex = clip?.segmentIndex ?? 0;
+  const segment = manifest.segments[segmentIndex];
+
+  useEffect(() => {
+    if (clips.length > 0 && clipIndex >= clips.length) {
+      setClipIndex(clips.length - 1);
+    }
+  }, [clips.length, clipIndex]);
+
+  useEffect(() => {
+    if (!clip?.audioArtifactId) return;
+    let disposed = false;
+    let objectUrl: string | null = null;
+    setAudioUrl(null);
+    setLoadError(null);
+    invoke<ArrayBuffer>("audio_asset", {
+      artifactId: clip.audioArtifactId,
+    })
+      .then((bytes) => {
+        if (disposed) return;
+        objectUrl = URL.createObjectURL(
+          new Blob([bytes], { type: clip.mimeType ?? "audio/wav" }),
+        );
+        setAudioUrl(objectUrl);
+      })
+      .catch((reason) => setLoadError(String(reason)));
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [clip?.audioArtifactId]);
+
+  useEffect(() => {
+    activeTranscriptRef.current?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, [segmentIndex]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !audioUrl) return;
+    audio.playbackRate = playbackRate;
+    const resume = () => {
+      audio.currentTime = pendingSeek.current / 1000;
+      pendingSeek.current = 0;
+      if (wantsPlayback.current) {
+        void audio.play().catch((reason) => {
+          wantsPlayback.current = false;
+          setPlaying(false);
+          setLoadError(String(reason));
+        });
+      }
+    };
+    audio.addEventListener("loadedmetadata", resume, { once: true });
+    audio.load();
+    return () => audio.removeEventListener("loadedmetadata", resume);
+  }, [audioUrl]);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.playbackRate = playbackRate;
+  }, [playbackRate]);
+
+  function seek(targetMs: number) {
+    const foundIndex = clips.findIndex((item) => item.endMs > targetMs);
+    const normalizedIndex = foundIndex < 0 ? clips.length - 1 : foundIndex;
+    const next = clips[normalizedIndex];
+    pendingSeek.current = Math.max(0, targetMs - next.startMs);
+    setCurrentMs(targetMs);
+    if (normalizedIndex === clipIndex && audioRef.current) {
+      audioRef.current.currentTime = pendingSeek.current / 1000;
+      pendingSeek.current = 0;
+    } else {
+      setClipIndex(normalizedIndex);
+    }
+  }
+
+  function seekToSegment(index: number) {
+    const target = manifest.segments[
+      Math.max(0, Math.min(manifest.segments.length - 1, index))
+    ];
+    seek(target.startMs);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
+    const target = event.target as HTMLElement;
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+    if (event.key === " " && target.tagName === "BUTTON") return;
+    switch (event.key) {
+      case " ":
+        togglePlayback();
+        break;
+      case "ArrowLeft":
+        seek(Math.max(0, currentMs - 5_000));
+        break;
+      case "ArrowRight":
+        seek(Math.min(manifest.audio.durationMs - 1, currentMs + 5_000));
+        break;
+      case "ArrowUp":
+        seekToSegment(segmentIndex - 1);
+        break;
+      case "ArrowDown":
+        seekToSegment(segmentIndex + 1);
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  }
+
+  function togglePlayback() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (wantsPlayback.current) {
+      wantsPlayback.current = false;
+      audio.pause();
+      setPlaying(false);
+    } else {
+      wantsPlayback.current = true;
+      setPlaying(true);
+      void audio.play().catch((reason) => {
+        wantsPlayback.current = false;
+        setPlaying(false);
+        setLoadError(String(reason));
+      });
+    }
+  }
+
+  if (!segment || !clip) return null;
+  return (
+    <section
+      className="lesson-player"
+      aria-labelledby="lesson-player-title"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      aria-keyshortcuts="Space ArrowLeft ArrowRight ArrowUp ArrowDown"
+    >
+      <div className="player-heading">
+        <div>
+          <span className="context-label">Playable lesson</span>
+          <h3 id="lesson-player-title">{manifest.title}</h3>
+        </div>
+        <span>{segmentIndex + 1} / {manifest.segments.length}</span>
+      </div>
+      <div className="player-timeline">
+        <input
+          aria-label="Lesson position"
+          type="range"
+          min={0}
+          max={manifest.audio.durationMs}
+          value={Math.min(currentMs, manifest.audio.durationMs)}
+          onChange={(event) => seek(Number(event.currentTarget.value))}
+        />
+        <div>
+          <span>{formatClock(currentMs)}</span>
+          <span>{formatClock(manifest.audio.durationMs)}</span>
+        </div>
+      </div>
+      <div className="player-controls">
+        <button
+          type="button"
+          onClick={() => seekToSegment(segmentIndex - 1)}
+          disabled={segmentIndex === 0}
+        >
+          Previous
+        </button>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={togglePlayback}
+          disabled={!audioUrl}
+        >
+          {playing ? "Pause" : "Play"}
+        </button>
+        <button
+          type="button"
+          onClick={() => seekToSegment(segmentIndex + 1)}
+          disabled={segmentIndex === manifest.segments.length - 1}
+        >
+          Next
+        </button>
+        <label>
+          Speed
+          <select
+            value={playbackRate}
+            onChange={(event) => setPlaybackRate(Number(event.currentTarget.value))}
+          >
+            {[0.75, 1, 1.25, 1.5, 2].map((rate) => (
+              <option value={rate} key={rate}>{rate}×</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <article className="active-segment" aria-live="polite">
+        <div>
+          <span>{eventLabel(segment.presentation.type ?? "article_text")}</span>
+          <span>{segment.sourceBlocks.join(", ")}</span>
+          <button
+            type="button"
+            className="segment-regenerate"
+            onClick={() => onRegenerateSegment(segment.id)}
+            disabled={regenerationDisabled}
+            title="Regenerate this segment's audio, bypassing the cache"
+          >
+            Regenerate segment
+          </button>
+        </div>
+        <p>{segment.displayText}</p>
+      </article>
+      <ol className="player-transcript" aria-label="Lesson transcript">
+        {manifest.segments.map((item, index) => (
+          <li
+            key={item.id}
+            ref={index === segmentIndex ? activeTranscriptRef : undefined}
+          >
+            <button
+              type="button"
+              aria-current={index === segmentIndex}
+              onClick={() => seek(item.startMs)}
+            >
+              <span>{formatClock(item.startMs)}</span>
+              <p>{item.displayText}</p>
+            </button>
+          </li>
+        ))}
+      </ol>
+      {loadError && <p className="player-error">{loadError}</p>}
+      <p className="player-hint">
+        Space play/pause · ←/→ seek 5s · ↑/↓ segment
+      </p>
+      <audio
+        ref={audioRef}
+        src={audioUrl ?? undefined}
+        onPlay={() => setPlaying(true)}
+        onPause={() => {
+          if (!wantsPlayback.current) setPlaying(false);
+        }}
+        onTimeUpdate={(event) =>
+          setCurrentMs(clip.startMs + event.currentTarget.currentTime * 1000)
+        }
+        onEnded={() => {
+          if (clipIndex < clips.length - 1) {
+            pendingSeek.current = 0;
+            setClipIndex((index) => index + 1);
+          } else {
+            wantsPlayback.current = false;
+            setPlaying(false);
+            setCurrentMs(manifest.audio.durationMs);
+          }
+        }}
+      />
+    </section>
+  );
+}
+
 function App() {
   const [host, setHost] = useState<HostInfo | null>(null);
   const [jobId, setJobId] = useState(freshJobId);
@@ -173,14 +520,24 @@ function App() {
   const [refreshSource, setRefreshSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AgentRunResult | null>(null);
+  const [generatingAudio, setGeneratingAudio] = useState(false);
+  const [audioProgress, setAudioProgress] = useState<AudioProgress | null>(null);
+  const [cancellingAudio, setCancellingAudio] = useState(false);
   const eventCursor = useRef<number | null>(null);
+  const narrationArtifact = latestArtifact(snapshot.artifacts, "narration_plan");
+  const playbackArtifact = latestArtifact(snapshot.artifacts, "playback_manifest");
+  const playbackManifest = playbackArtifact?.payload as PlaybackManifest | undefined;
+  const inspectableArtifacts = useMemo(
+    () => snapshot.artifacts.filter((artifact) => artifact.kind !== "audio_segment"),
+    [snapshot.artifacts],
+  );
 
   const activeArtifact = useMemo(
     () =>
-      snapshot.artifacts.find(
+      inspectableArtifacts.find(
         (artifact) => artifact.artifactId === selectedArtifact,
-      ) ?? snapshot.artifacts[snapshot.artifacts.length - 1],
-    [selectedArtifact, snapshot.artifacts],
+      ) ?? inspectableArtifacts[inspectableArtifacts.length - 1],
+    [inspectableArtifacts, selectedArtifact],
   );
   const articleQuality = useMemo(() => {
     const article = latestArtifact(snapshot.artifacts, "normalized_article");
@@ -392,6 +749,54 @@ function App() {
     }
   }
 
+  async function runLessonAudio(
+    command: "generate_audio" | "regenerate_segment_audio",
+    input: Record<string, unknown>,
+  ) {
+    setGeneratingAudio(true);
+    setError(null);
+    const onProgress = new Channel<AudioProgress>();
+    onProgress.onmessage = (progress) => setAudioProgress(progress);
+    try {
+      const result = await invoke<{ manifest: Artifact }>(command, {
+        input,
+        onProgress,
+      });
+      await refreshSnapshot(jobId);
+      setSelectedArtifact(result.manifest.artifactId);
+    } catch (reason) {
+      setError(String(reason));
+      // Cancelled or failed generations keep completed segments cached.
+      await refreshSnapshot(jobId).catch(() => {});
+    } finally {
+      setGeneratingAudio(false);
+      setCancellingAudio(false);
+      setAudioProgress(null);
+    }
+  }
+
+  async function generateLessonAudio() {
+    await runLessonAudio("generate_audio", { jobId, speed: 1 });
+  }
+
+  async function regenerateSegmentAudio(segmentId: string) {
+    await runLessonAudio("regenerate_segment_audio", {
+      jobId,
+      segmentId,
+      speed: 1,
+    });
+  }
+
+  async function cancelLessonAudio() {
+    setCancellingAudio(true);
+    try {
+      await invoke("cancel_audio_generation", { jobId });
+    } catch (reason) {
+      setCancellingAudio(false);
+      setError(String(reason));
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -596,6 +1001,7 @@ function App() {
               <dt>Maximum runtime</dt>
               <dd>{host?.agentMaxRuntimeSeconds ? `${host.agentMaxRuntimeSeconds}s` : "Disabled"}</dd>
             </div>
+            <div><dt>Kokoro</dt><dd title={host?.kokoroEndpoint}>{host?.kokoroEndpoint ?? "Unavailable"}</dd></div>
           </dl>
         </form>
 
@@ -647,6 +1053,57 @@ function App() {
             <h2 id="artifact-title">Artifacts</h2>
             <span>{snapshot.artifacts.length} durable</span>
           </div>
+          {narrationArtifact && (
+            <div className="audio-action">
+              <div>
+                <strong>{playbackArtifact ? "Lesson audio ready" : "Generate lesson audio"}</strong>
+                <span>
+                  {generatingAudio && audioProgress
+                    ? audioProgress.currentSegmentId
+                      ? `Segment ${audioProgress.completedSegments + 1} of ${audioProgress.totalSegments} · ${audioProgress.currentSegmentId}`
+                      : `${audioProgress.completedSegments} of ${audioProgress.totalSegments} segments done`
+                    : playbackArtifact
+                      ? `${(playbackManifest?.segments.length ?? 0)} cached segments`
+                      : `${host?.audioProvider ?? "The audio provider"} generates and caches each narration segment.`}
+                </span>
+                {generatingAudio && audioProgress && (
+                  <progress
+                    max={audioProgress.totalSegments}
+                    value={audioProgress.completedSegments}
+                    aria-label="Audio generation progress"
+                  />
+                )}
+              </div>
+              {generatingAudio ? (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void cancelLessonAudio()}
+                  disabled={cancellingAudio}
+                >
+                  {cancellingAudio ? "Cancelling…" : "Cancel"}
+                </button>
+              ) : (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void generateLessonAudio()}
+                  disabled={running}
+                >
+                  {playbackArtifact ? "Regenerate" : "Generate audio"}
+                </button>
+              )}
+            </div>
+          )}
+          {playbackManifest && (
+            <LessonPlayer
+              manifest={playbackManifest}
+              onRegenerateSegment={(segmentId) =>
+                void regenerateSegmentAudio(segmentId)
+              }
+              regenerationDisabled={generatingAudio || running}
+            />
+          )}
           {snapshot.artifacts.length === 0 ? (
             <div className="artifact-empty">Validated MCP outputs will appear here with their content hash.</div>
           ) : (
@@ -695,7 +1152,7 @@ function App() {
                 </section>
               )}
               <div className="artifact-tabs" role="list">
-                {snapshot.artifacts.map((artifact) => (
+                {inspectableArtifacts.map((artifact) => (
                   <button
                     type="button"
                     key={artifact.artifactId}
