@@ -14,14 +14,15 @@ Digest is a privacy-first, local-first native desktop application that transform
 
 ## How It Works
 
-1. **Ingestion & Normalization** -- Ingest web article URLs or raw Markdown. Cleans HTML, preserves structural hierarchy (headings, paragraphs, code blocks, lists, callouts), and extracts canonical article metadata into SQLite.
-2. **Concept & Content Analysis** -- Evaluates source text to identify core ideas, supporting concepts, causal flows, code snippets, quantitative claims, and high-value visualization opportunities.
-3. **Narration Scripting** -- Generates conversational, technically accurate spoken narration scripts in configurable modes (Faithful, Explained, Deep Dive, Executive) with clear boundaries between source claims and supplementary explanations.
-4. **Audio Synthesis & Pluggable TTS** -- Synthesizes speech via local TTS sidecars (e.g. Piper/Kokoro) or remote API providers with voice customization, speed control, and chunk caching.
-5. **Timestamp Alignment** -- Generates paragraph, sentence, and word-level audio alignment timestamps to anchor all presentation events to the audio clock.
-6. **Presentation Planning & Visual Generation** -- Maps narration segments to visual components: synchronized text highlighting, interactive code stepping, structured Mermaid/SVG diagrams, data charts, and animated state machines.
-7. **Timeline Assembly & Storage** -- Persists the compiled presentation timeline, synchronized segments, and visual component states directly to SQLite and content-addressed storage.
-8. **Deterministic Playback Runtime** -- Plays audio and drives 60 FPS UI transitions, text scrolling, and visual animations strictly through a single master playback clock with zero runtime LLM dependency.
+The stages below reflect the code at commit `3d99c32`. Stages marked *not built* are the remaining gap in the runtime path; the authoritative plan is [`article_learning_engine_prd.md`](article_learning_engine_prd.md) and the per-feature status is in [docs/milestones.md](docs/milestones.md).
+
+1. **Ingestion & Normalization** -- Captures an article URL over bounded HTTP with manual redirect handling and rejection of private or loopback targets. Stores an immutable raw capture, then a normalized article of ordered blocks (heading, paragraph, code, list, quote, diagram), image metadata with resolved `srcset` candidates, and extraction diagnostics. Raw Markdown and HTML input are *not built*.
+2. **Agent Analysis** -- An ACP-driven agent reads the normalized article through the `read_artifact` MCP tool and writes findings through `write_analysis`. Every finding carries a category, a `ProvenanceKind`, and the source blocks it came from.
+3. **Narration Scripting** -- The agent calls `write_narration_plan` with segments that keep display text and TTS text separate and are labeled with intent, importance, and provenance. Every source block and every diagram must be taught, summarized, or skipped with a rationale, and TTS text that adds or drops content is rejected. The four narration modes in the PRD are not a selectable input; there is one compilation prompt.
+4. **Audio Generation** -- Kokoro's local OpenAI-compatible speech endpoint returns Ogg Opus for each sentence. Every completed part is persisted and cached by input hash, so a retry, an edit to one sentence, or a restart re-synthesizes only what changed. Durations are derived by Digest from the container bytes, never from provider headers.
+5. **Sentence Alignment** -- Narration segments are subdivided at sentence boundaries into transport parts, each with its own artifact and timing. This is the sentence-level alignment tier. Word-level timing is *not built*: Kokoros exposes timestamps only through its CLI, not its HTTP endpoint.
+6. **Manifest Assembly** -- A versioned playback manifest records the audio configuration, the segments, and per-sentence parts with their timing, provenance, and presentation. The manifest is the timeline; there is no separate lesson table.
+7. **Deterministic Playback** -- The player loads one sentence part at a time over raw Tauri IPC, derives the lesson position from the audio clock, and drives transcript auto-scroll, part-granular seeking, and playback speed from it. Manifests from earlier schema versions normalize into the same clip model and still play. The structured visual renderers -- diagrams, code walkthroughs, charts -- are *not built*; presentation data reaches the manifest as opaque JSON.
 
 ---
 
@@ -29,15 +30,16 @@ Digest is a privacy-first, local-first native desktop application that transform
 
 | Layer | Technology | Notes |
 | :--- | :--- | :--- |
-| **Desktop Shell** | [Tauri v2](https://v2.tauri.app/) | ~20 MB installer, ~60 MB RAM footprint, capability-based security model |
-| **Frontend** | React 19, TypeScript, Vite, TailwindCSS | 60 FPS synchronized playback canvas, custom media timeline controls |
-| **Core Engine** | Rust (`tokio`, `rusqlite`, `reqwest`, `serde`) | Job state machine, stream processing, validation engine, storage manager |
-| **Persistence** | SQLite in WAL mode | Single Database Writer Actor pattern, crash-recoverable job queues |
-| **Storage** | Content-Addressed File Store | Immutable artifacts and cached audio chunks indexed by SHA-256 |
-| **Intelligence Layer** | ACP (Agent Client Protocol) Bridge | Pluggable harness (Codex, Antigravity, Claude, custom agents) |
-| **Audio Synthesis** | Pluggable TTS Provider | Local TTS sidecars (Piper, Kokoro) + Cloud TTS APIs |
-| **Alignment** | Multi-tier Synchronizer | Word-level alignment fallback chain (Word -> Sentence -> Paragraph) |
-| **Visual Components** | Structured Declarative Renderers | Semantic SVG, Canvas, Mermaid, Prism/Shiki syntax highlighting |
+| **Desktop Shell** | [Tauri v2](https://v2.tauri.app/) | Small binary, low memory footprint, capability-based security model |
+| **Frontend** | React 19, TypeScript, Vite | Single-file app (`src/App.tsx`) with hand-written CSS in `src/App.css`. No Tailwind, no state library, no component directory |
+| **Core Engine** | Rust (`tokio`, `rusqlite`, `reqwest`, `serde`, `rmcp`, `schemars`) | Flat modules, subprocess supervision, audio pipeline, MCP server |
+| **Persistence** | SQLite in WAL mode | Three tables: `artifacts`, `agent_events`, `run_attempts`. No writer actor, no migration table |
+| **Storage** | Content-Addressed File Store | `artifacts/objects/{sha256}.{json,bin}`, written to a temp file and atomically renamed. Audio parts cached by input hash |
+| **Intelligence Layer** | ACP (Agent Client Protocol) over stdio | OpenCode natively; `agy` through an explicit adapter command |
+| **Tool Layer** | MCP over stdio | The agent calls `ingest_article`, `read_artifact`, `write_analysis`, `write_narration_plan` |
+| **Audio Synthesis** | `AudioProvider` trait; Kokoro implementation | Local, free, offline. Delivers Ogg Opus; a provider whose container Digest cannot time is rejected |
+| **Alignment** | Sentence granularity via transport parts | Word-level is blocked on provider timestamps |
+| **Visual Components** | Structured declarative JSON | Travels in the manifest; renderers not built |
 
 ---
 
@@ -45,38 +47,42 @@ Digest is a privacy-first, local-first native desktop application that transform
 
 ```
 digest/
+|-- article_learning_engine_prd.md  # Authoritative product, architecture, and phase document
+|-- agents.md                       # Binding working rules (pnpm, no caps, no emojis)
+|-- HANDOFF.md                      # Current implementation state and open work
+|-- PRODUCT.md                      # Product design context
+|-- DESIGN.md                       # Visual design tokens and rules
 |-- docs/
-|   |-- README.md                # Documentation home and navigation map
-|   |-- architecture.md          # Master system architecture & technical invariants
-|   |-- milestones.md            # Master development roadmap (Features 1-15 across 5 sprints)
-|   |-- contracts.md             # Shared typed contracts (TS <-> Rust & IPC models)
-|   |-- decisions.md             # Architectural decision log (ADR format: D-001 ...)
-|   `-- setup.md                 # Teaching guide for workspace setup & minimal dependencies
-|-- src/                         # React 19 + TypeScript frontend application
-|   |-- components/              # UI widgets (Player, Canvas, Library, Dropzone)
-|   |-- features/                # Domain views (Presentation, Inspector, Settings)
-|   |-- player/                  # Master playback clock & timeline synchronizer
-|   |-- presentation/            # Declarative visual component renderers
-|   |-- services/                # Tauri IPC bridge & mock data providers
-|   `-- types/contracts/         # Hand-maintained TypeScript contract types
-|-- src-tauri/                   # Rust core engine & Tauri v2 backend
+|   |-- README.md                   # Documentation home and navigation map
+|   |-- milestones.md               # Master roadmap (Features 1-15) and progress tracker
+|   |-- architecture.md             # System architecture, glossary, patterns, storage
+|   |-- contracts.md                # Shared typed contracts (Tauri commands, artifacts, manifest 1.2)
+|   |-- decisions.md                # Decision log (ADR format: D-001 ...)
+|   `-- research-agent-ingestion-runtime.md  # Pre-implementation research note
+|-- scripts/
+|   `-- run_demo.sh                 # Starts Kokoro + the Tauri dev app, cleans up on exit
+|-- src/
+|   |-- App.tsx                     # Whole frontend: run setup, activity, artifacts, player
+|   |-- App.css                     # Whole stylesheet
+|   `-- main.tsx                    # React entry point
+|-- src-tauri/
 |   |-- src/
-|   |   |-- commands/            # Tauri IPC command handlers
-|   |   |-- jobs/                # Durable generation job state machine
-|   |   |-- storage/             # SQLite WAL connection & Database Writer Actor
-|   |   |-- artifacts/           # Content-addressed filesystem artifact manager
-|   |   |-- acp/                 # Agent Client Protocol client bridge
-|   |   |-- audio/               # Pluggable TTS provider & alignment integration
-|   |   |-- validator/           # Timeline and alignment validation engine
-|   |   |-- contracts/           # Hand-maintained Rust contract structs & enums
-|   |   |-- lib.rs               # Tauri command registration & plugin setup
-|   |   `-- main.rs              # Application entry point & Tokio async runtime
-|   |-- Cargo.toml               # Rust dependencies
-|   `-- tauri.conf.json          # Tauri capability & window configuration
-|-- public/                      # Static assets, fonts, icons
-|-- package.json                 # Node dependencies and scripts
-|-- tsconfig.json                # TypeScript configuration
-`-- vite.config.ts               # Vite bundler configuration
+|   |   |-- lib.rs                  # Module wiring and the tauri::generate_handler! list
+|   |   |-- main.rs                 # Application entry point
+|   |   |-- host.rs                 # Every #[tauri::command] handler and HostState
+|   |   |-- application.rs          # DigestService: SQLite schema, artifacts, events, attempts
+|   |   |-- ingestion.rs            # HTTP capture, normalization, image localization
+|   |   |-- acp.rs                  # ACP client, supervision, cancellation, event projection
+|   |   |-- tools.rs                # Validated MCP tool contracts
+|   |   |-- mcp.rs                  # MCP server bound to stdio
+|   |   |-- audio.rs                # AudioProvider, cache, duration derivation, manifest 1.2
+|   |   `-- bin/digest-mcp.rs       # The MCP binary the agent launches
+|   |-- tests/                      # Integration tests and fixtures
+|   |-- Cargo.toml
+|   `-- tauri.conf.json
+|-- package.json                    # Node dependencies and scripts
+|-- pnpm-lock.yaml                  # Authoritative lockfile
+`-- vite.config.ts
 ```
 
 ---
@@ -85,7 +91,7 @@ digest/
 
 ### Prerequisites
 
-- **Node.js**: v20 or higher
+- **Node.js**: v20.19 or higher (Vite 7 requirement)
 - **pnpm**: v9 or higher (`npm install -g pnpm`)
 - **Rust**: stable toolchain (`rustup default stable`)
 - **Platform Dependencies**:
@@ -103,20 +109,19 @@ pnpm install
 ### Development
 
 ```bash
-# Run frontend only with Vite (browser dev mode with mock fixtures)
-pnpm dev
-
-# Run desktop application (Tauri + React + Rust backend)
+# Run the desktop application. This is the only mode that works: the UI calls
+# real Tauri commands, so there is no mock/browser-only mode.
 pnpm tauri dev
 ```
 
 ### Testing
 
 ```bash
-# Run Rust unit & integration tests
+# Run Rust unit and integration tests (54 passing, 1 ignored at 3d99c32).
+# The ignored test hits a live Kokoro container.
 cargo test --manifest-path src-tauri/Cargo.toml
 
-# Run TypeScript type check
+# Type check and production build the frontend
 pnpm build
 ```
 
@@ -124,7 +129,23 @@ pnpm build
 
 ## Core Invariants & Privacy
 
-- **Audio Is the Timeline** -- The audio playback clock is the single source of truth for synchronization. Text highlights, code steps, and visual transitions are driven deterministically by this clock.
-- **Agent Plans, Runtime Executes** -- The external agent acts as an offline compiler producing the presentation timeline and assets. Once generated, playback requires zero LLM calls and functions 100% offline.
-- **Source Fidelity** -- Generated explanations, concept analogies, and supplementary notes are strictly separated from direct author claims in the data model and UI presentation.
-- **Local-First & Private** -- Article texts, generated audio, intermediate analysis, and learning history are stored locally in SQLite and content-addressed filesystem storage.
+- **Audio Is the Timeline** -- The audio playback clock is the single source of truth. Nothing advances on a timer. The player loads one sentence part at a time and derives the lesson position, transcript highlight, and active segment from that clock, so text and audio cannot drift.
+- **Durations Are Derived, Not Reported** -- Every segment and part duration is computed by Digest from the durable container bytes (RFC 7845 granule positions for Ogg Opus). A provider-reported number is never trusted, and a format Digest cannot time is rejected before anything is written.
+- **Agent Plans, Runtime Executes** -- The external agent acts as an offline compiler producing the analysis, narration plan, and assets. Once generated, playback requires zero LLM calls and works entirely offline.
+- **Source Fidelity** -- Generated explanations, inferences, and teaching scaffolding are tagged with a `ProvenanceKind` and strictly separated from source-derived claims in the data model and the UI. Every source block is explicitly taught, summarized, or skipped with a rationale.
+- **No Caps On Output** -- Findings, narration segments, and lesson duration are not capped. Rendering may use collapsed previews; complete output stays durable and inspectable.
+- **Local-First & Private** -- Article texts, generated audio, analysis, and run history are stored locally in SQLite and a content-addressed filesystem store under the OS app-data directory (`$HOME/.local/share/com.bhondu.digest` on Linux). Nothing leaves the machine except the article fetch and the local TTS request.
+
+---
+
+## Documentation
+
+`article_learning_engine_prd.md` is the authoritative product and architecture document. `agents.md` holds binding working rules. For everything else start at [`docs/README.md`](docs/README.md): the [roadmap](docs/milestones.md), [architecture](docs/architecture.md), [contracts](docs/contracts.md), [decision log](docs/decisions.md). [`HANDOFF.md`](HANDOFF.md) records the current implementation state and what remains open.
+
+## Running it
+
+```bash
+./run_demo.sh
+```
+
+That script starts the Kokoro TTS container, waits for it to answer, launches `pnpm tauri dev`, and on `Ctrl-C` tears down every process it spawned and stops the container. Use `./run_demo.sh --help` for the options.

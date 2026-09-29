@@ -2,29 +2,80 @@
 
 > Full project build order for a single developer. This document is the **single canonical roadmap** describing **what** needs to be built, **why**, **which files to touch**, and **how to verify**, in strict dependency order.
 >
-> For system architecture, see [System Architecture](architecture.md). For IPC and data types, see [Shared Contracts](contracts.md).
+> For system architecture, see [System Architecture](architecture.md). For IPC and data types, see [Shared Contracts](contracts.md). For the authoritative product and architecture definition, see [`article_learning_engine_prd.md`](../article_learning_engine_prd.md).
+>
+> The "Key Files" lists below name real paths in the repository. Where the
+> original plan described a module that was never built, the list names what
+> exists instead and says so. The Rust core is flat modules under
+> `src-tauri/src/`; there is no `src-tauri/src/contracts/`, `commands/`,
+> `storage/`, `artifacts/`, `jobs/`, or `audio/` directory. The frontend is a
+> single-file React app (`src/App.tsx` plus `src/App.css`); there is no
+> `src/player/`, `src/presentation/`, `src/features/`, `src/services/`,
+> `src/mocks/`, or `src/types/contracts/`, and no Zustand.
 
 ---
 
 ## Progress Tracker
 
+Status is measured against the code at commit `3d99c32`. `[x]` means the
+feature's acceptance surface exists; `[~]` means a working slice exists but part
+of the stated scope does not; `[ ]` means not started.
+
 ```
-[ ] Feature 1  — Foundation & Tauri v2 Shell                          (Sprint 1)
-[ ] Feature 2  — Article Ingestion & Content Normalizer               (Sprint 1)
-[ ] Feature 3  — SQLite WAL Persistence & Job State Machine           (Sprint 1)
-[ ] Feature 4  — ACP Agent Bridge & Communication Layer               (Sprint 2)
-[ ] Feature 5  — Narration Planner & Script Engine                    (Sprint 2)
-[ ] Feature 6  — Audio Generation & Pluggable TTS Gateway             (Sprint 2)
-[ ] Feature 7  — Audio Alignment & Timestamp Synchronizer             (Sprint 2)
+[x] Feature 1  — Foundation & Tauri v2 Shell                          (Sprint 1)
+[~] Feature 2  — Article Ingestion & Content Normalizer               (Sprint 1)
+[~] Feature 3  — SQLite WAL Persistence & Job State Machine           (Sprint 1)
+[~] Feature 4  — ACP Agent Bridge & Communication Layer               (Sprint 2)
+[~] Feature 5  — Narration Planner & Script Engine                    (Sprint 2)
+[x] Feature 6  — Audio Generation & Pluggable TTS Gateway             (Sprint 2)
+[~] Feature 7  — Audio Alignment & Timestamp Synchronizer             (Sprint 2)
 [ ] Feature 8  — Lesson Timeline Assembler & Validator                (Sprint 3)
-[ ] Feature 9  — Synchronized Player Runtime & Master Clock           (Sprint 3)
+[~] Feature 9  — Synchronized Player Runtime & Master Clock           (Sprint 3)
 [ ] Feature 10 — Interactive Reading Canvas & Text Highlighter        (Sprint 3)
 [ ] Feature 11 — Structured Visual Component Engine                   (Sprint 4)
-[ ] Feature 12 — Article Library & Job Progress Inspector             (Sprint 4)
-[ ] Feature 13 — Content-Addressed Artifact Store & Cache Manager     (Sprint 4)
+[~] Feature 12 — Article Library & Job Progress Inspector             (Sprint 4)
+[~] Feature 13 — Content-Addressed Artifact Store & Cache Manager     (Sprint 4)
 [ ] Feature 14 — Personal Learning Layer & Concept Graph (V3)         (Sprint 5)
 [ ] Feature 15 — Security Hardening, Packaging & Multi-Platform CI/CD (Sprint 5)
 ```
+
+Notes on the statuses that are not obvious from the code:
+
+- Feature 1: the Tauri v2 shell, capability allowlist, and typed IPC round-trip
+  exist. There is no `ping` probe command, no custom frameless titlebar, and no
+  Tailwind build; styling is hand-written CSS in `src/App.css`.
+- Feature 2: URL capture is complete. Raw Markdown/HTML input, Chromium
+  rendered-DOM fallback, and the checked-in fixture corpus are not implemented.
+- Feature 3: `digest.db` runs in WAL mode with content-addressed artifacts,
+  durable attempts, and startup recovery. There is no writer actor, no
+  `schema_migrations` table, and no `articles` / `sections` / `blocks` /
+  `lessons` / `timeline_segments` / `playback_history` tables: article and
+  lesson state live in the `artifacts` table as immutable JSON payloads.
+- Feature 4: stdio transport, session lifecycle, permission policy, activity
+  supervision, and cancellation exist for OpenCode and an explicit agy adapter
+  command. WebSocket/HTTP transports and typed skill invocation do not.
+- Feature 5: the MCP `write_narration_plan` contract exists with provenance,
+  intent, importance, display/TTS text separation, and full source-block
+  coverage accounting. The four narration modes (Faithful, Explained, Deep
+  Dive, Executive) are not a selectable input; there is one compilation prompt.
+- Feature 6: the `AudioProvider` boundary, Kokoro provider, format-aware
+  per-part cache, and durable Ogg Opus artifacts exist. The design recorded in
+  the PRD replaced the concatenated `master.opus` stream of this feature with
+  per-sentence artifacts plus a playback manifest, so that requirement is
+  superseded rather than pending.
+- Feature 7: sentence-level alignment is delivered by sentence-boundary
+  transport parts in playback manifest `1.2`. Word-level alignment is not
+  implemented because the Kokoros HTTP API exposes no timestamps.
+- Feature 9: the player runs on the audio clock with seeking, playback speed,
+  keyboard controls, transcript auto-scroll, and per-segment regeneration. There
+  is no separate player store or timeline module; the player is a component
+  inside `src/App.tsx`.
+- Feature 12: durable recent-run navigation, an attempt strip, an event
+  inspector, and an artifact inspector exist. Search, filtering, deletion, and
+  artifact cleanup do not.
+- Feature 13: artifacts are content-addressed under `artifacts/objects/` and
+  audio parts are cached by input hash. The `.digest` export/import archive is
+  not implemented.
 
 ---
 
@@ -71,11 +122,12 @@ These architectural choices are documented in [System Architecture](architecture
 | **Desktop Shell** | Tauri v2 | Electron | ~20 MB binary vs 150 MB+; native OS Webview; strict capability security |
 | **Core Engine** | Rust (Tokio) | Node.js, Python | Native process supervision, zero-runtime async engine, safe memory model |
 | **Frontend** | React 19 + TypeScript + Vite | Svelte, Vue | Rich ecosystem for syntax highlighting, charts, and media player controls |
-| **Persistence** | SQLite WAL + Single Writer Actor | PostgreSQL, IndexedDB | Single-file, durable across restarts, zero lock contention |
+| **Persistence** | SQLite WAL + Immutable Artifacts | PostgreSQL, IndexedDB | Single-file, durable across restarts, zero lock contention |
 | **Execution Model** | Offline Agent Compiler + Deterministic Player | Real-time Streaming LLM | Deterministic seeking, 100% offline playback, zero token cost on replay |
 | **Master Clock** | Audio Element `currentTime` | Independent JS Timers | Single source of truth; eliminates audio/visual drift |
 | **Visual Engine** | Structured SVG/Canvas/DOM Components | Generative MP4 Video | Instant seek, < 20 MB storage, crisp high-DPI scaling, selectable code |
 | **Intelligence Bridge**| ACP (Agent Client Protocol) | Direct Vendor LLM API | Model-agnostic; supports Codex, Antigravity, Claude, and local agents |
+| **Durable Audio** | Per-sentence Ogg Opus artifacts + versioned manifest | Concatenated master Opus stream | Seek and regenerate one sentence without re-encoding the lesson; see [D-012](decisions.md#d-012--durable-audio-per-sentence-ogg-opus-artifacts-over-a-concatenated-master-stream) |
 
 ---
 
@@ -87,13 +139,18 @@ Every subsequent feature requires a running desktop application with two-way com
 
 ### Key Files to Touch / Create
 
-- `src-tauri/tauri.conf.json` — Window dimensions, frameless mode, title
-- `src-tauri/capabilities/default.json` — Security capability allowlist
-- `src-tauri/src/main.rs` — Initialize Tokio multi-threaded runtime
-- `src-tauri/src/contracts/error.rs` — Typed `AppError` enum using `thiserror`
-- `src-tauri/src/lib.rs` — Register `ping` command
-- `src/services/api.ts` — Frontend typed IPC bridge with mock fallback
-- `src/App.tsx` — Desktop layout shell (Titlebar, Viewport, Sidebar)
+The planned `src-tauri/src/contracts/`, `src-tauri/src/commands/`, and
+`src/services/api.ts` layers were not built. The real seams are flat modules
+under `src-tauri/src/`, and the whole UI is `src/App.tsx`.
+
+- `src-tauri/tauri.conf.json` — Window size, title, app identifier, bundler settings
+- `src-tauri/capabilities/default.json` — Security capability allowlist (`core:default`, `opener:default`)
+- `src-tauri/src/main.rs` — Application entry point
+- `src-tauri/src/lib.rs` — Module wiring and the `tauri::generate_handler!` command list
+- `src-tauri/src/host.rs` — Every `#[tauri::command]` handler and `HostState`
+- `src-tauri/src/application.rs` — `DigestError` (the typed error enum) and durable storage
+- `src/App.tsx` — Whole desktop layout, session setup, activity, artifacts, player
+- `src/App.css` — Whole stylesheet (hand-written CSS, no Tailwind)
 
 ### Requirements
 
@@ -127,11 +184,17 @@ Web articles come from messy HTML with ads, cookie banners, navigation bars, and
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/extractor/fetcher.rs` — HTTP fetcher with redirect and timeout handling via `reqwest`
-- `src-tauri/src/extractor/readability.rs` — Readability DOM content sanitizer
-- `src-tauri/src/extractor/parser.rs` — Structural AST block parser (headings, code, lists, callouts)
-- `src-tauri/src/contracts/article.rs` — `NormalizedArticle`, `ArticleSection`, `ArticleBlock` structs
-- `src-tauri/src/commands/ingest.rs` — `ingest_url` IPC command handler
+The planned `src-tauri/src/extractor/` and `src-tauri/src/commands/ingest.rs`
+files were not created. Extraction, normalization, and capture live in one
+module, and the MCP tool is the agent-facing entry point rather than a Tauri
+command.
+
+- `src-tauri/src/ingestion.rs` — HTTP capture, HTML extraction/normalization, block parsing, image metadata and localization
+- `src-tauri/src/tools.rs` — `ingest_article` MCP tool contract (`IngestArticleInput` / `IngestArticleOutput`)
+- `src-tauri/src/mcp.rs` — MCP server binding the tool to stdio
+- `src-tauri/src/bin/digest-mcp.rs` — MCP binary the agent launches
+- `src-tauri/src/application.rs` — Artifact persistence used for raw capture, normalized article, and image bytes
+- `src-tauri/tests/article_ingestion.rs` — 8 extraction and localization tests
 
 ### Requirements
 
@@ -148,9 +211,9 @@ Web articles come from messy HTML with ads, cookie banners, navigation bars, and
 
 | Edge Case | Behavior |
 | :--- | :--- |
-| Paywalled or 403 Forbidden page | Return `AppError::Extractor("Content access restricted")` |
-| Malformed HTML / unclosed tags | Robust HTML5 parser recovery (e.g. `html5ever`) |
-| Code block with no language specified | Auto-detect or default to `"text"` |
+| Paywalled or 403 Forbidden page | Persist the response and let extraction report low confidence with warnings; do not synthesize content |
+| Malformed HTML / unclosed tags | Robust HTML5 parser recovery (`html5ever`) |
+| Code block with no language specified | Persist `language: null` rather than guessing a language |
 | Page with no identifiable title | Fallback to URL path or `<title>` meta tag |
 
 ### Verification
@@ -169,11 +232,16 @@ Article contents, normalized structures, generation jobs, and playback progress 
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/storage/db.rs` — SQLite connection pool and WAL mode initializers
-- `src-tauri/src/storage/migrations/001_initial.sql` — Schema definition for articles, sections, blocks, lessons, timeline segments, jobs
-- `src-tauri/src/storage/actor.rs` — `DbWriterActor` task over Tokio MPSC channel
-- `src-tauri/src/jobs/manager.rs` — Job lifecycle state machine and checkpoint manager
-- `src-tauri/src/commands/jobs.rs` — IPC queries for job state
+The planned `src-tauri/src/storage/`, `src-tauri/src/jobs/`, and
+`src-tauri/src/commands/jobs.rs` files were not created. There is no writer
+actor; `DigestService` owns one connection and runs short statements
+synchronously. Durable run state lives in the `run_attempts` table and article
+state lives in the `artifacts` table.
+
+- `src-tauri/src/application.rs` — `DigestService::open`, `digest.db` schema (`artifacts`, `agent_events`, `run_attempts`), WAL/foreign-key pragmas, content-addressed object writes, `recover_abandoned_attempts`
+- `src-tauri/src/host.rs` — `run_snapshot` and `recent_runs` queries over that state
+- `src-tauri/src/acp.rs` — `AgentRunSupervision` (inactivity timeout, optional max runtime) and attempt records
+- `src-tauri/tests/application_service.rs` — 8 durability tests including retry separation and abandoned-attempt recovery
 
 ### Requirements
 
@@ -200,11 +268,15 @@ Digest delegates content analysis, narration planning, and visualization plannin
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/acp/traits.rs` — `AgentProvider` async trait definition
-- `src-tauri/src/acp/client.rs` — Stdio subprocess transport & JSON-RPC framing
-- `src-tauri/src/acp/session.rs` — Session lifecycle, skill dispatcher, timeout management
-- `src-tauri/src/contracts/acp.rs` — `AgentSession`, `SkillInvocation`, `SessionRequest`
-- `src-tauri/src/contracts/concepts.rs` — `ConceptAnalysis`, `ConceptItem`, `VisualizationOpportunity`
+The planned `src-tauri/src/acp/` directory, `#[async_trait]` `AgentProvider`
+trait, and `src-tauri/src/contracts/` modules were not built. ACP is one module
+and `AgentProvider` is a launch-spec enum, not a session trait.
+
+- `src-tauri/src/acp.rs` — Stdio subprocess transport, JSON-RPC framing, session lifecycle, capability negotiation, permission policy, activity supervision, cancellation, canonical event projection
+- `src-tauri/src/mcp.rs` — Digest MCP server launched into the agent session
+- `src-tauri/src/bin/digest-mcp.rs` — MCP binary entry point
+- `src-tauri/src/application.rs` — `AgentEvent`, `NewAgentEventKind`, `RunAttempt`, presentation-event projection
+- `src-tauri/tests/acp_client.rs` — 4 launch-spec and MCP-injection tests
 
 ### Requirements
 
@@ -231,10 +303,15 @@ Direct text-to-speech on a raw article sounds dry and unnatural. The narration e
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/narration/prompts.rs` — Prompt templates for Faithful, Explained, Deep Dive, Executive modes
-- `src-tauri/src/narration/planner.rs` — Narration planner orchestrator
-- `src-tauri/src/narration/validator.rs` — Provenance validator checking proposed block IDs
-- `src-tauri/src/contracts/narration.rs` — `NarrationPlan`, `NarrationSegment`
+The planned `src-tauri/src/narration/` planner, prompt library, and provenance
+validator were not created as separate files. Narration is authored by the agent
+through a validated MCP tool; the application enforces the contract, not a
+script generator.
+
+- `src-tauri/src/tools.rs` — `write_narration_plan` contract: segment provenance, intent, importance, display/TTS text separation, source-block and diagram coverage accounting, TTS-faithfulness validation, machine-readable diagnostics
+- `src-tauri/src/application.rs` — Narration plan artifact persistence
+- `src-tauri/src/host.rs` — The compilation prompt sent to the agent in `start_agent_run`
+- `src-tauri/tests/digest_tools.rs` — 5 narration contract tests
 
 ### Requirements
 
@@ -260,12 +337,19 @@ Audio synthesis must work across different user hardware setups: offline local T
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/audio/gateway.rs` — Unified TTS gateway & provider dispatcher
-- `src-tauri/src/audio/providers/local_tts.rs` — Local TTS sidecar runner (Piper / Kokoro)
-- `src-tauri/src/audio/providers/cloud_tts.rs` — Cloud TTS client (OpenAI / ElevenLabs)
-- `src-tauri/src/audio/cache.rs` — SHA-256 hash-based audio chunk cache
-- `src-tauri/src/audio/encoder.rs` — Concatenation and master Opus encoder
-- `src-tauri/src/contracts/audio.rs` — `AudioArtifact`, `MasterAudioTrack`, `TTSProviderConfig`
+The planned `src-tauri/src/audio/` directory with `gateway.rs`,
+`providers/local_tts.rs`, `providers/cloud_tts.rs`, `cache.rs`, `encoder.rs`, and
+`src-tauri/src/contracts/audio.rs` were not created. The audio pipeline is one
+module with a single provider implementation.
+
+- `src-tauri/src/audio.rs` — `AudioProvider` trait, `KokoroProvider`, `AudioGenerationService`, per-part cache, `durable_audio_duration_ms`, sentence subdivision, playback manifest `1.2`
+- `src-tauri/src/host.rs` — `generate_audio`, `regenerate_segment_audio`, `cancel_audio_generation`, `audio_asset`
+- `src-tauri/src/application.rs` — `audio_segment` and `playback_manifest` artifact kinds
+- `src-tauri/tests/audio_generation.rs` — Manifest generation, timing, caching, cancellation, regeneration
+- `src-tauri/tests/live_providers.rs` — Ignored live Kokoro probe (requires a running Kokoros endpoint)
+- `src-tauri/tests/fixtures/kokoro-opus-probe.ogg` — Real provider output used by the RFC 7845 duration test
+
+The master-track requirement below is superseded: see [D-012](decisions.md#d-012--durable-audio-per-sentence-ogg-opus-artifacts-over-a-concatenated-master-stream).
 
 ### Requirements
 
@@ -291,8 +375,10 @@ Text highlights, code steps, and diagrams must synchronize exactly with the spok
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/audio/alignment.rs` — Multi-tier forced alignment parser and fallback chain
-- `src-tauri/src/contracts/alignment.rs` — `AlignmentReport`, `SegmentTiming`, `WordTiming`
+- `src-tauri/src/audio.rs` — `split_into_sentence_parts` (sentence-boundary transport subdivision with short-fragment merging) and the `parts[]` array in the `1.2` playback manifest, which together implement Tier 2
+- `src-tauri/src/audio.rs` — `wav_duration_ms` and `ogg_opus_duration_ms` for Tier 3 segment bounds
+- `src/App.tsx` — `clips` normalization and `seek`, which resolve the active part from the audio clock
+- Tier 1 (word-level timestamps) has no file: it is blocked on the provider, not on design
 
 ### Requirements
 
@@ -320,11 +406,14 @@ All generated pieces (normalized article, audio track, alignment timestamps, vis
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/validator/timeline.rs` — Monotonicity and timestamp integrity validator
-- `src-tauri/src/storage/lesson.rs` — Atomic lesson repository writer
-- `src-tauri/src/contracts/lesson.rs` — `Lesson`, `TimelineSegment`
-- `src-tauri/src/contracts/presentation.rs` — `PresentationComponent` variants
-- `src-tauri/src/commands/lessons.rs` — `get_lesson` IPC handler
+None of the planned files exist. No `lessons` or `timeline_segments` table, no
+`validator` module, and no `get_lesson` command. The nearest shipped seam is the
+playback manifest artifact written by the audio pass; the PRD's presentation
+manifest (section 21) remains the contract this feature must eventually satisfy.
+
+- Target files once this feature starts: `src-tauri/src/validator/`, the lesson
+  and timeline tables in `src-tauri/src/application.rs`, and a lesson query in
+  `src-tauri/src/host.rs`
 
 ### Requirements
 
@@ -348,20 +437,23 @@ The desktop player must drive 60 FPS UI transitions, text scrolling, and visual 
 
 ### Key Files to Touch / Create
 
-- `src/player/usePlayerClock.ts` — High-frequency playback clock hook (`requestAnimationFrame`)
-- `src/player/playerStore.ts` — Zustand store for audio state, active segment, and timeline
-- `src/player/timelineResolver.ts` — O(log N) binary search segment and word resolver
-- `src/components/player/PlayerBar.tsx` — Playback controls, scrub bar, speed dropdown
-- `src/components/player/useKeyboardShortcuts.ts` — Global media key bindings
+The planned `src/player/` directory, `src/components/player/`, and Zustand are
+not in the codebase. The player is a single component in `src/App.tsx` with
+local React state; there is no shared store module.
+
+- `src/App.tsx` (`LessonPlayer`) — audio element, clip list, master clock, `seek`, `seekToSegment`, `togglePlayback`, keyboard handler, playback-rate control, transcript, per-segment regenerate control
+- `src/App.css` — Player layout, transcript states, `prefers-reduced-motion` handling
+- `src-tauri/src/host.rs` — `audio_asset` raw binary IPC used to load each clip
+- `src-tauri/src/audio.rs` — Manifest `1.0`/`1.1`/`1.2` normalization into one clip list
 
 ### Requirements
 
-- HTML5 `<audio>` element wrapped in a custom React player store (Zustand)
-- Master clock: `currentTime` drives active segment, sentence, word, and visual component resolution
-- Playback controls: Play/Pause, Seek bar, Skip 10s backward/forward, Previous/Next segment
+- HTML5 `<audio>` element wrapped in a React component with local state (no external store)
+- Master clock: `currentTime` drives active clip, active segment, and seeking
+- Playback controls: Play/Pause, Seek bar, Previous/Next segment, transcript selection
 - Variable playback speed: 0.75x, 1.0x, 1.25x, 1.5x, 2.0x without pitch distortion
-- Keyboard shortcuts: `Space` (Play/Pause), `Left/Right` (Seek 5s), `J/L` (Seek 10s), `[` / `]` (Previous/Next section)
-- O(log N) binary search for instant segment resolution during scrubbing
+- Keyboard shortcuts: `Space` (Play/Pause), `Left/Right` (Seek 5s), `Up/Down` (Previous/Next segment). `J`/`L` and `[`/`]` are not implemented
+- Clip resolution is a linear scan over the flattened clip list, not a binary search; the clip list is one entry per sentence part
 
 ### Verification
 
@@ -379,10 +471,14 @@ When rendering the `article-text` presentation type, the user needs to see the a
 
 ### Key Files to Touch / Create
 
-- `src/presentation/ArticleTextView.tsx` — Structured article reading canvas
-- `src/presentation/BlockRenderer.tsx` — Recursive block renderer (paragraph, heading, quote, list)
-- `src/presentation/HighlightOverlay.tsx` — Karaoke word and sentence highlight overlay
-- `src/presentation/useAutoScroll.ts` — Viewport auto-scroll with user scroll override detection
+The planned `src/presentation/` directory does not exist. What exists today is a
+transcript list in the player, which is the only reading surface.
+
+- `src/App.tsx` — Transcript `<ol>` with `aria-current` on the active segment, and the active-segment `<article>` with `displayText` and the presentation type label
+- `src/App.css` — Transcript row states, active-segment block
+
+None of `ArticleTextView`, `BlockRenderer`, `HighlightOverlay`, or
+`useAutoScroll` were created.
 
 ### Requirements
 
@@ -408,12 +504,13 @@ Technical articles require more than just text highlighting: they need diagrams,
 
 ### Key Files to Touch / Create
 
-- `src/presentation/PresentationDispatcher.tsx` — Component router based on `presentation.type`
-- `src/presentation/DiagramRenderer.tsx` — Mermaid SVG graph renderer with active node pulsing
-- `src/presentation/CodeWalkthroughRenderer.tsx` — Shiki syntax highlighter with line stepping
-- `src/presentation/ChartRenderer.tsx` — Responsive SVG/Canvas Bar, Line, and Pie chart
-- `src/presentation/ConceptCardRenderer.tsx` — Styled takeaway card with provenance badges
-- `src/presentation/AnimatedFlowRenderer.tsx` — Multi-step process transition component
+None of the planned files exist. Presentation types are currently carried as
+opaque JSON: `tools.rs` validates the `presentation.type` enum inside
+`write_narration_plan`, and `src/App.tsx` renders the type name as a label. No
+renderer exists for any of them.
+
+- Target files once this feature starts: `src/presentation/` under `src/`, with
+  a dispatcher keyed on `presentation.type`
 
 ### Requirements
 
@@ -440,10 +537,16 @@ Users need a central dashboard to view all saved articles, see generation progre
 
 ### Key Files to Touch / Create
 
-- `src/features/library/ArticleLibrary.tsx` — Library grid/list view with search and filters
-- `src/features/library/ArticleCard.tsx` — Article preview card with duration & progress badges
-- `src/features/inspector/JobInspectorModal.tsx` — Real-time generation modal with live progress bars
-- `src/features/library/UrlInputModal.tsx` — URL submission modal with narration mode options
+The planned `src/features/library/` and `src/features/inspector/` directories do
+not exist. What exists is a compact inspection surface inside `src/App.tsx`.
+
+- `src/App.tsx` — URL input and run controls, `recent_runs` list, `run_snapshot` attempt strip, ordered activity feed with expandable previews, artifact inspector with raw payload view
+- `src-tauri/src/host.rs` — `recent_runs`, `run_snapshot`, `start_agent_run`, `cancel_agent_run`, `host_info`
+- `src-tauri/src/application.rs` — `list_runs` and the presentation-event cursor
+
+Missing: library grid/list with search and filters, article cards with progress
+badges, a narration-mode selector in the input modal, and article deletion with
+artifact cleanup.
 
 ### Requirements
 
@@ -469,9 +572,16 @@ Audio synthesis and LLM processing are expensive. We need an immutable artifact 
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/artifacts/manager.rs` — File path resolver and SHA-256 hash verifier
-- `src-tauri/src/artifacts/exporter.rs` — `.digest` archive packager and unpacker (Zip)
-- `src-tauri/src/commands/artifacts.rs` — `export_article`, `import_article` IPC handlers
+The planned `src-tauri/src/artifacts/manager.rs`, `exporter.rs`, and
+`src-tauri/src/commands/artifacts.rs` were not created. Content addressing lives
+inside `application.rs`.
+
+- `src-tauri/src/application.rs` — `persist_json_artifact` and `persist_binary_artifact`: SHA-256 identity, atomic temporary-file write into `artifacts/objects/{hash}.{ext}`, content-addressed dedupe
+- `src-tauri/src/audio.rs` — `audio_cache_key` over provider, MIME type, voice, speed, segment id, and part text; newest-matching-artifact-wins resolution
+- `src-tauri/src/host.rs` — `audio_asset` reads binary artifacts back out
+
+Missing: `artifacts/articles/{id}/` per-article directory layout, concept
+analysis caching, and the `.digest` export/import archive.
 
 ### Requirements
 
@@ -496,8 +606,13 @@ Over time, users read dozens of articles across related domains (e.g. distribute
 
 ### Key Files to Touch / Create
 
-- `src-tauri/src/storage/concepts.rs` — Concept graph and user familiarity repository
-- `src/features/concepts/ConceptExplorer.tsx` — Graph visualization of learned concepts
+None of the planned files exist. There is no concept graph table and no concept
+UI.
+
+- Target files once this feature starts: concept tables in
+  `src-tauri/src/application.rs`, and a `src/features/concepts/` view
+- Related groundwork that does exist: `AnalysisFinding` and `AnalysisClaim` in
+  `src-tauri/src/tools.rs`, which the agent populates today without a graph
 
 ### Requirements
 
@@ -521,8 +636,8 @@ Before release, the application must be hardened against security vulnerabilitie
 
 ### Key Files to Touch / Create
 
-- `src-tauri/capabilities/default.json` — Audited strict capability permission allowlist
-- `.github/workflows/release.yml` — Multi-platform GitHub Actions build matrix (Windows, macOS, Linux)
+- `src-tauri/capabilities/default.json` — Currently grants only `core:default` and `opener:default`; it has not been audited against network or filesystem access
+- No `.github/` directory exists, so there is no workflow file to edit
 
 ### Requirements
 

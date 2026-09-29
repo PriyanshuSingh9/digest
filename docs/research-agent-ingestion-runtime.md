@@ -2,14 +2,33 @@
 
 - **Status:** Planning input, not yet an accepted architecture decision
 - **Date:** 2026-08-13
+- **Last drift audit:** 2026-09-05, against commit `3d99c32`
 - **Authority:** `article_learning_engine_prd.md` is the product and architecture source of truth. Other repository documents are stale and are not inputs to this recommendation.
+
 **Scope:** Clarify three parts of the product specification before implementation:
 
 1. what an "ACP-connected agent" means,
 2. what complete article ingestion must preserve,
 3. whether the playback runtime should use Astro with React islands or a React application.
 
-This note uses primary documentation and source code. The inspected reference repositories are available locally under `.delta/research/` and are intentionally not part of the project.
+This note uses primary documentation and source code. The inspected reference repositories were available locally under `.delta/research/` at the time of writing; that directory has since been deleted, so the third-party links below are the only surviving record of what was inspected.
+
+## What was built from this note
+
+For readers reconciling this recommendation against the code. The recommendations in §1 and §3 held; §1.6 and §3.3 were not built as written.
+
+| Recommendation | Outcome at `3d99c32` |
+| :--- | :--- |
+| §1.1 OpenCode and `agy` as the two V1 providers | Built. `AgentProvider` is an enum with `OpenCode` and `Agy { adapter_command, adapter_args }` variants. No Codex, Claude Code, or Grok integration. |
+| §1.2 Native ACP preferred, thin adapter where absent | Built. OpenCode runs `opencode acp` natively; `agy` runs through an explicit adapter command. |
+| §1.5 ACP in front, MCP behind | Built. `src-tauri/src/acp.rs` drives the agent; `src-tauri/src/mcp.rs` serves `ingest_article`, `read_artifact`, `write_analysis`, and `write_narration_plan` over MCP stdio. |
+| §1.6 The `AgentDriver` trait and `AgentCapabilities` | **Not built.** There is no `AgentDriver` trait and no capability structure. `AgentProvider` is an enum carrying launch information only. Capability negotiation happens inside `acp.rs` at the protocol level. Adding a provider means adding an enum variant. |
+| §2.2 Layered capture, extract, normalize, localize, validate | Built for URL input. Fast bounded HTTP capture with manual redirect handling and private/loopback rejection, immutable raw capture, structural normalization, image localization with byte-derived MIME, and persisted diagnostics. Not built: Markdown or HTML input, headless-browser fallback. |
+| §2.3 Media as part of the canonical source | Built. `ArticleImage` carries original and resolved URLs, alt, title, caption, dimensions, `srcsetCandidates`, capture status, and an explicit error on failure. |
+| §3.3 React + TypeScript + Vite, not Astro | Built. The player is a component inside `src/App.tsx`; there is no `src/player/` module. |
+| §3.3 A separate Rust HTTP service | **Not built.** The only transport is Tauri IPC, including raw binary for `audio_asset`. The `McpLaunchSpec` and `DigestTools` split the design so a service could be added without a Tauri dependency; that seam is intact and unused. |
+| §4 Remote access, Cloudflare Tunnel, V2 Hermes | Not started. V2 work. |
+| §6 Validation spikes | Agent and extraction spikes were effectively run during implementation. The playback spike and the V2 deployment spike are not recorded as done. |
 
 ## Executive recommendation
 
@@ -122,6 +141,8 @@ Digest host -- ACP/stdin+stdout --> agent
 MCP-over-ACP is promising but is an RFD and existing agents do not all support it. Start with the required MCP stdio transport. Keep the tool implementation behind a transport-independent Rust service so MCP-over-ACP can be added later.
 
 ### 1.6 Proposed agent contract
+
+> **Not implemented as proposed.** The method list and the `AgentCapabilities` structure below were not built. `AgentProvider` is an enum in `src-tauri/src/acp.rs` carrying only the launch information (`OpenCode`, or `Agy { adapter_command, adapter_args }`), and `AcpClient` implements the client directly. This section is kept as the record of what was recommended.
 
 The exact Rust API should follow the selected ACP SDK, but the domain boundary needs at least:
 
@@ -292,7 +313,7 @@ Tauri on Linux
   +-- manages local evaluation workflows
   +-- hosts the React lesson library and player
 
-Rust HTTP service
+Rust HTTP service                    [not built]
   +-- serves versioned web runtime assets
   +-- serves lesson API/manifests
   +-- serves content-addressed media with range requests
