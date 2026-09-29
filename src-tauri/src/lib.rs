@@ -4,6 +4,7 @@ mod audio;
 mod host;
 mod ingestion;
 mod mcp;
+mod tool_input;
 mod tools;
 
 pub use acp::{

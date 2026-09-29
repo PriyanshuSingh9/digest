@@ -351,3 +351,629 @@ fn narration_rejects_tts_text_that_adds_new_explanation() {
 
     assert!(error.to_string().contains("pronunciation"));
 }
+
+/// The self-correcting-error contract, exercised through the same argument-level entry points the
+/// MCP tool handlers use.
+mod self_correcting_errors {
+    use digest_lib::{ArticleIngestionService, DigestMcpServer, DigestService, DigestTools};
+    use rmcp::ErrorData;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+
+    const INVALID_PARAMS: i32 = -32602;
+    const INTERNAL_ERROR: i32 = -32603;
+
+    const ARTICLE: &[u8] =
+        b"<article><h1>Durable logs</h1><p>The WAL records every acknowledged write.</p></article>";
+
+    struct Fixture {
+        _directory: tempfile::TempDir,
+        server: DigestMcpServer,
+        article_id: String,
+    }
+
+    fn fixture() -> Fixture {
+        let directory = tempfile::tempdir().expect("create temporary data directory");
+        let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+        let article = ArticleIngestionService::new(service.clone())
+            .persist_response(
+                "job-1",
+                "https://example.com/article",
+                "https://example.com/article",
+                200,
+                Some("text/html"),
+                ARTICLE,
+            )
+            .expect("persist normalized article")
+            .article;
+        let server = DigestMcpServer::new(DigestTools::new(service));
+        Fixture {
+            _directory: directory,
+            server,
+            article_id: article.artifact_id,
+        }
+    }
+
+    /// Every agent-correctable failure must arrive as invalid_params, never as a server fault.
+    fn assert_reported_as_invalid_params(error: &ErrorData) {
+        assert_eq!(error.code.0, INVALID_PARAMS, "message: {}", error.message);
+        assert_ne!(error.code.0, INTERNAL_ERROR);
+    }
+
+    fn valid_analysis(fixture: &Fixture) -> Value {
+        json!({
+            "jobId": "job-1",
+            "articleId": fixture.article_id,
+            "centralArgument": {
+                "text": "The write-ahead log records every acknowledged write.",
+                "sourceBlocks": ["block-2"],
+                "kind": "source_derived"
+            },
+            "findings": [{
+                "category": "key_claim",
+                "text": "Acknowledged writes are recorded before they are applied.",
+                "sourceBlocks": ["block-2"],
+                "kind": "source_derived"
+            }]
+        })
+    }
+
+    fn segment(display_text: &str, tts_text: &str, source_blocks: &[&str]) -> Value {
+        json!({
+            "displayText": display_text,
+            "ttsText": tts_text,
+            "sourceBlocks": source_blocks,
+            "presentationType": "article-text",
+            "importance": "core",
+            "intent": "explanation",
+            "provenance": "source_derived"
+        })
+    }
+
+    fn plan(fixture: &Fixture, segments: Value) -> Value {
+        json!({
+            "jobId": "job-1",
+            "articleId": fixture.article_id,
+            "title": "Durable logs",
+            "segments": segments,
+            "sourceCoverageDecisions": [
+                { "sourceBlocks": ["block-1"], "treatment": "skip", "rationale": "Title only." },
+                { "sourceBlocks": ["block-2"], "treatment": "teach", "rationale": "Core claim." }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_well_formed_call_still_succeeds_through_the_owned_decode() {
+        let fixture = fixture();
+        let written = fixture
+            .server
+            .write_analysis_arguments(&valid_analysis(&fixture))
+            .expect("a valid analysis is accepted");
+        assert!(!written.artifact_id.is_empty());
+        assert!(!written.content_hash.is_empty());
+
+        let read = fixture
+            .server
+            .read_artifact_arguments(&json!({ "artifactId": written.artifact_id }))
+            .expect("the persisted artifact is readable");
+        assert_eq!(read.artifact.payload["schemaVersion"], "1.1");
+    }
+
+    #[test]
+    fn a_provenance_value_in_the_category_field_names_both_vocabularies() {
+        let fixture = fixture();
+        let mut arguments = valid_analysis(&fixture);
+        arguments["findings"][0]["category"] = json!("ai_explanation");
+        let error = fixture
+            .server
+            .write_analysis_arguments(&arguments)
+            .expect_err("ai_explanation is a ProvenanceKind, not an AnalysisFindingKind");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("findings[0].category"), "{message}");
+        assert!(message.contains("AnalysisFindingKind"), "{message}");
+        assert!(message.contains("never takes ProvenanceKind"), "{message}");
+        assert!(
+            message.contains("Allowed: major_concept, supporting_concept, key_claim"),
+            "{message}"
+        );
+        assert!(
+            message.contains("\"category\": \"major_concept\""),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_narration_intent_in_the_presentation_type_field_names_both_vocabularies() {
+        let fixture = fixture();
+        let mut arguments = plan(
+            &fixture,
+            json!([segment(
+                "The log records every acknowledged write.",
+                "The log records every acknowledged write.",
+                &["block-2"]
+            )]),
+        );
+        arguments["segments"][0]["presentationType"] = json!("quantification");
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&arguments)
+            .expect_err("quantification is a NarrationIntent, not a PresentationType");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(
+            message.contains("segments[0].presentationType"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Allowed: article-text, callout, code, concept-card"),
+            "{message}"
+        );
+        assert!(message.contains("never takes NarrationIntent"), "{message}");
+    }
+
+    #[test]
+    fn a_presentation_type_in_the_intent_field_names_both_vocabularies() {
+        let fixture = fixture();
+        let mut arguments = plan(
+            &fixture,
+            json!([segment(
+                "The log records every acknowledged write.",
+                "The log records every acknowledged write.",
+                &["block-2"]
+            )]),
+        );
+        arguments["segments"][0]["intent"] = json!("concept-card");
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&arguments)
+            .expect_err("concept-card is a PresentationType, not a NarrationIntent");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("segments[0].intent"), "{message}");
+        assert!(
+            message.contains("Allowed: introduction, explanation, example, comparison"),
+            "{message}"
+        );
+        assert!(
+            message.contains("never takes PresentationType"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_double_encoded_claim_shows_the_uncoded_object_and_the_corrected_call() {
+        let fixture = fixture();
+        let mut arguments = valid_analysis(&fixture);
+        let claim = arguments["centralArgument"].clone();
+        arguments["centralArgument"] = json!(claim.to_string());
+        let error = fixture
+            .server
+            .write_analysis_arguments(&arguments)
+            .expect_err("a string that contains the claim object is double encoded");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("centralArgument"), "{message}");
+        assert!(message.contains("serialized twice"), "{message}");
+        assert!(
+            message.contains(r#""sourceBlocks": ["block-1", "block-2"]"#),
+            "{message}"
+        );
+        assert!(message.contains("Corrected call: {"), "{message}");
+    }
+
+    #[test]
+    fn a_missing_finding_field_reports_the_exact_path_and_an_example() {
+        let fixture = fixture();
+        let mut arguments = valid_analysis(&fixture);
+        arguments["findings"][0]
+            .as_object_mut()
+            .expect("finding object")
+            .remove("text");
+        let error = fixture
+            .server
+            .write_analysis_arguments(&arguments)
+            .expect_err("a finding without text cannot be grounded");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(
+            message.contains("missing required field `findings[0].text`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Received keys: category, kind, sourceBlocks"),
+            "{message}"
+        );
+        assert!(message.contains(r#""category": "key_claim""#), "{message}");
+    }
+
+    #[test]
+    fn an_object_where_an_array_belongs_reports_the_field_and_an_example() {
+        let fixture = fixture();
+        let mut arguments = valid_analysis(&fixture);
+        arguments["findings"] = json!({ "0": arguments["findings"][0].clone() });
+        let error = fixture
+            .server
+            .write_analysis_arguments(&arguments)
+            .expect_err("findings is a sequence, not a map");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("findings must be"), "{message}");
+        assert!(
+            message.contains("a non-empty array of AnalysisFinding objects"),
+            "{message}"
+        );
+        assert!(message.contains(r#""category": "key_claim""#), "{message}");
+    }
+
+    #[test]
+    fn a_bare_findings_list_reports_the_expected_top_level_object() {
+        let fixture = fixture();
+        let bare = json!([valid_analysis(&fixture)["findings"][0].clone()]);
+        let error = fixture
+            .server
+            .write_analysis_arguments(&bare)
+            .expect_err("a bare list is not the arguments object");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("must be one JSON object"), "{message}");
+        assert!(
+            message.contains("jobId, articleId, centralArgument, findings"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn missing_top_level_fields_are_named_instead_of_merely_counted() {
+        let fixture = fixture();
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&json!({
+                "jobId": "job-1",
+                "articleId": fixture.article_id,
+                "segments": [segment(
+                    "The log records every acknowledged write.",
+                    "The log records every acknowledged write.",
+                    &["block-2"]
+                )]
+            }))
+            .expect_err("title and sourceCoverageDecisions are required");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(
+            message.contains("missing required top-level field(s): title, sourceCoverageDecisions"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Received keys: jobId, articleId, segments"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn empty_top_level_fields_are_named_against_the_full_required_set() {
+        let fixture = fixture();
+        let mut arguments = plan(
+            &fixture,
+            json!([segment(
+                "The log records every acknowledged write.",
+                "The log records every acknowledged write.",
+                &["block-2"]
+            )]),
+        );
+        arguments["title"] = json!("");
+        arguments["segments"] = json!([]);
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&arguments)
+            .expect_err("an empty title and an empty segment list are rejected");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(
+            message.contains("narration plan requires jobId, articleId, title, and segments"),
+            "{message}"
+        );
+        assert!(
+            message.contains("missing or empty: title, segments"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_segment_names_the_empty_field() {
+        let fixture = fixture();
+        let arguments = plan(
+            &fixture,
+            json!([segment("", "The log records every write.", &["block-2"])]),
+        );
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&arguments)
+            .expect_err("a segment without display text cannot be spoken");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(
+            message.contains("narration segment 1 is incomplete"),
+            "{message}"
+        );
+        assert!(
+            message.contains("displayText (empty or whitespace only)"),
+            "{message}"
+        );
+        assert!(
+            message.contains(r#""displayText": "io_uring submits work asynchronously.""#),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn unfaithful_tts_text_reports_the_measured_distance_and_both_examples() {
+        let fixture = fixture();
+        let arguments = plan(
+            &fixture,
+            json!([segment(
+                "The WAL records every acknowledged write.",
+                "The W A L records every acknowledged write. This architecture also makes every \
+                 replica independently scalable and easier to operate.",
+                &["block-2"]
+            )]),
+        );
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&arguments)
+            .expect_err("ttsText must not add educational content");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("narration segment 1 ttsText"), "{message}");
+        assert!(
+            message.contains("may only normalize pronunciation"),
+            "{message}"
+        );
+        assert!(message.contains("token edit distance"), "{message}");
+        assert!(message.contains("allowed budget 5"), "{message}");
+        assert!(message.contains("Accepted normalization:"), "{message}");
+        assert!(
+            message.contains("displayText \"io_uring submits work asynchronously.\""),
+            "{message}"
+        );
+        assert!(message.contains("Rejected rewrite:"), "{message}");
+        assert!(
+            message.contains("adds a sentence that displayText does not contain"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_source_block_is_reported_with_a_sample_of_valid_ids() {
+        let fixture = fixture();
+        let arguments = plan(
+            &fixture,
+            json!([segment(
+                "The log records every acknowledged write.",
+                "The log records every acknowledged write.",
+                &["block-2", "block-99"]
+            )]),
+        );
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&arguments)
+            .expect_err("an invented block id cannot be grounded");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("segments[0].sourceBlocks"), "{message}");
+        assert!(message.contains("block-99"), "{message}");
+        assert!(
+            message.contains("The normalized article has 2: block-1, block-2"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_skipped_block_that_is_cited_states_the_rule_and_both_fixes() {
+        let fixture = fixture();
+        let arguments = plan(
+            &fixture,
+            json!([segment(
+                "Durable logs record acknowledged writes.",
+                "Durable logs record acknowledged writes.",
+                &["block-1", "block-2"]
+            )]),
+        );
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&arguments)
+            .expect_err("a skipped block must not be cited");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(message.contains("is marked skip"), "{message}");
+        assert!(
+            message.contains("a block marked `skip` must not appear in any segment"),
+            "{message}"
+        );
+        assert!(
+            message.contains("changing sourceCoverageDecisions[0].treatment to `teach`"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn unaccounted_source_blocks_are_listed_with_a_corrected_decision() {
+        let fixture = fixture();
+        let error = fixture
+            .server
+            .write_narration_plan_arguments(&json!({
+                "jobId": "job-1",
+                "articleId": fixture.article_id,
+                "title": "Durable logs",
+                "segments": [segment(
+                    "The log records every acknowledged write.",
+                    "The log records every acknowledged write.",
+                    &["block-2"]
+                )],
+                "sourceCoverageDecisions": [
+                    {
+                        "sourceBlocks": ["block-2"],
+                        "treatment": "teach",
+                        "rationale": "Core claim."
+                    }
+                ]
+            }))
+            .expect_err("every block must be accounted for");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(
+            message.contains("account for 1 of 2 source blocks"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Unaccounted block(s): block-1"),
+            "{message}"
+        );
+        assert!(message.contains(r#""treatment": "teach""#), "{message}");
+    }
+
+    #[test]
+    fn an_article_from_another_job_reports_both_artifact_and_job() {
+        let fixture = fixture();
+        let mut arguments = valid_analysis(&fixture);
+        arguments["jobId"] = json!("job-2");
+        let error = fixture
+            .server
+            .write_analysis_arguments(&arguments)
+            .expect_err("an analysis must belong to the article's job");
+
+        assert_reported_as_invalid_params(&error);
+        let message = error.message.as_ref();
+        assert!(
+            message.contains("does not reference this job's normalized article"),
+            "{message}"
+        );
+        assert!(message.contains("owned by job \"job-1\""), "{message}");
+    }
+
+    #[test]
+    fn an_unknown_artifact_id_is_a_parameter_error_not_a_server_fault() {
+        let fixture = fixture();
+        let error = fixture
+            .server
+            .read_artifact_arguments(&json!({ "artifactId": "article-does-not-exist" }))
+            .expect_err("an unknown artifact id is the caller's mistake");
+
+        assert_reported_as_invalid_params(&error);
+        assert!(
+            error.message.contains("article-does-not-exist"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn the_published_schema_separates_the_two_adjacent_enums() {
+        let schema = serde_json::to_value(schemars::schema_for!(digest_lib::AnalysisFinding))
+            .expect("serialize finding schema");
+        let properties = schema["properties"].as_object().expect("properties");
+        let category = properties["category"]["description"]
+            .as_str()
+            .expect("category is described");
+        let kind = properties["kind"]["description"]
+            .as_str()
+            .expect("kind is described");
+
+        assert!(category.contains("AnalysisFindingKind"), "{category}");
+        assert!(category.contains("`key_claim`"), "{category}");
+        assert!(
+            category.contains("does not take ProvenanceKind values"),
+            "{category}"
+        );
+        assert!(kind.contains("ProvenanceKind"), "{kind}");
+        assert!(kind.contains("`source_derived`"), "{kind}");
+        assert!(
+            kind.contains("does not take AnalysisFindingKind values"),
+            "{kind}"
+        );
+        assert_ne!(category, kind);
+    }
+
+    #[test]
+    fn the_published_segment_schema_separates_presentation_intent_and_provenance() {
+        let schema = serde_json::to_value(schemars::schema_for!(digest_lib::NarrationSegmentDraft))
+            .expect("serialize segment schema");
+        let properties = schema["properties"].as_object().expect("properties");
+
+        let presentation = properties["presentationType"]["description"]
+            .as_str()
+            .expect("presentationType is described");
+        let intent = properties["intent"]["description"]
+            .as_str()
+            .expect("intent is described");
+        let provenance = properties["provenance"]["description"]
+            .as_str()
+            .expect("provenance is described");
+
+        for value in ["article-text", "concept-card"] {
+            assert!(presentation.contains(value), "{presentation}");
+        }
+        assert!(
+            presentation.contains("belong in `intent`"),
+            "{presentation}"
+        );
+        for value in ["quantification", "takeaway"] {
+            assert!(intent.contains(value), "{intent}");
+        }
+        assert!(intent.contains("belong in `presentationType`"), "{intent}");
+        for value in [
+            "source_derived",
+            "ai_explanation",
+            "ai_inference",
+            "generated_educational",
+        ] {
+            assert!(provenance.contains(value), "{provenance}");
+        }
+        assert!(
+            provenance.contains("not AnalysisFindingKind and not NarrationIntent"),
+            "{provenance}"
+        );
+    }
+
+    #[test]
+    fn every_enum_variant_is_documented_in_the_published_schema() {
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(digest_lib::AnalysisFindingKind))
+                .expect("serialize kind schema"),
+            serde_json::to_value(schemars::schema_for!(digest_lib::ProvenanceKind))
+                .expect("serialize provenance schema"),
+            serde_json::to_value(schemars::schema_for!(digest_lib::PresentationType))
+                .expect("serialize presentation schema"),
+            serde_json::to_value(schemars::schema_for!(digest_lib::NarrationIntent))
+                .expect("serialize intent schema"),
+            serde_json::to_value(schemars::schema_for!(digest_lib::NarrationImportance))
+                .expect("serialize importance schema"),
+            serde_json::to_value(schemars::schema_for!(digest_lib::SourceCoverageTreatment))
+                .expect("serialize treatment schema"),
+        ] {
+            for variant in schema["oneOf"].as_array().expect("one entry per variant") {
+                assert!(
+                    variant["description"]
+                        .as_str()
+                        .is_some_and(|description| !description.is_empty()),
+                    "every variant carries a description: {variant}"
+                );
+            }
+        }
+    }
+}
