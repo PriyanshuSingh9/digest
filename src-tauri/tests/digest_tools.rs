@@ -1,8 +1,9 @@
 use digest_lib::{
-    AnalysisClaim, AnalysisFinding, AnalysisFindingKind, ArticleIngestionService, DigestService,
-    DigestTools, NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType,
-    ProvenanceKind, ReadArtifactInput, SourceCoverageDecision, SourceCoverageTreatment,
-    WriteAnalysisInput, WriteNarrationPlanInput,
+    AnalysisClaim, AnalysisFinding, AnalysisFindingKind, ArticleIngestionService, DiagramEdge,
+    DiagramNode, DigestService, DigestTools, NarrationImportance, NarrationIntent,
+    NarrationSegmentDraft, PresentationType, ProvenanceKind, ReadArtifactInput,
+    SourceCoverageDecision, SourceCoverageTreatment, VisualSpec, WriteAnalysisInput,
+    WriteNarrationPlanInput,
 };
 use std::sync::Arc;
 
@@ -119,15 +120,18 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 importance: NarrationImportance::Core,
                 intent: NarrationIntent::Introduction,
                 provenance: ProvenanceKind::SourceDerived,
+                image_id: None,
+                visual: None,
             }],
             source_coverage_decisions: vec![
                 coverage_decision(&["block-1"], SourceCoverageTreatment::Teach),
                 coverage_decision(&["block-2"], SourceCoverageTreatment::Skip),
             ],
+            image_coverage_decisions: vec![],
         })
         .expect("write narration plan");
 
-    assert_eq!(written.payload["schemaVersion"], "1.3");
+    assert_eq!(written.payload["schemaVersion"], "1.5");
     assert_eq!(
         written.payload["segments"][0]["displayText"],
         "io_uring submits work asynchronously."
@@ -168,11 +172,14 @@ fn narration_plan_preserves_display_and_spoken_text_with_source_provenance() {
                 importance: NarrationImportance::Supporting,
                 intent: NarrationIntent::Explanation,
                 provenance: ProvenanceKind::AiExplanation,
+                image_id: None,
+                visual: None,
             }],
             source_coverage_decisions: vec![coverage_decision(
                 &["block-1", "block-2"],
                 SourceCoverageTreatment::Skip,
             )],
+            image_coverage_decisions: vec![],
         })
         .expect_err("unknown source blocks must be rejected");
     assert!(error.to_string().contains("block-99"));
@@ -253,11 +260,14 @@ fn narration_requires_an_explicit_decision_for_every_source_diagram() {
             importance: NarrationImportance::Core,
             intent: NarrationIntent::Explanation,
             provenance: ProvenanceKind::SourceDerived,
+            image_id: None,
+            visual: None,
         }],
         source_coverage_decisions: vec![
             coverage_decision(&["block-1"], SourceCoverageTreatment::Skip),
             coverage_decision(&["block-2"], SourceCoverageTreatment::Summarize),
         ],
+        image_coverage_decisions: vec![],
     };
 
     let error = tools
@@ -291,14 +301,53 @@ fn narration_requires_an_explicit_decision_for_every_source_diagram() {
                 importance: NarrationImportance::Core,
                 intent: NarrationIntent::Explanation,
                 provenance: ProvenanceKind::SourceDerived,
+                image_id: None,
+                visual: Some(VisualSpec::Diagram {
+                    nodes: vec![
+                        DiagramNode {
+                            id: "api".into(),
+                            label: "API".into(),
+                        },
+                        DiagramNode {
+                            id: "log".into(),
+                            label: "Durable log".into(),
+                        },
+                        DiagramNode {
+                            id: "replica".into(),
+                            label: "Replica".into(),
+                        },
+                    ],
+                    edges: vec![
+                        DiagramEdge {
+                            from: "api".into(),
+                            to: "log".into(),
+                            label: "appends".into(),
+                        },
+                        DiagramEdge {
+                            from: "log".into(),
+                            to: "replica".into(),
+                            label: String::new(),
+                        },
+                    ],
+                }),
             }],
             source_coverage_decisions: vec![
                 coverage_decision(&["block-1", "block-2"], SourceCoverageTreatment::Skip),
                 coverage_decision(&["block-3"], SourceCoverageTreatment::Teach),
             ],
+            image_coverage_decisions: vec![],
         })
         .expect("present a source diagram");
 
+    assert_eq!(written.payload["segments"][0]["presentation"]["type"], "diagram");
+    assert_eq!(
+        written.payload["segments"][0]["presentation"]["visual"]["type"],
+        "diagram"
+    );
+    assert_eq!(
+        written.payload["segments"][0]["presentation"]["visual"]["nodes"][0]["id"],
+        "api"
+    );
     assert_eq!(written.payload["diagnostics"]["diagramBlockCount"], 1);
     assert_eq!(written.payload["diagnostics"]["referencedDiagramCount"], 1);
     assert_eq!(
@@ -308,6 +357,231 @@ fn narration_requires_an_explicit_decision_for_every_source_diagram() {
     assert_eq!(
         written.payload["sourceCoverageDecisions"][1]["treatment"],
         "teach"
+    );
+}
+
+/// A one-segment plan citing `cited`, which is taught while every other known
+/// block is skipped. Keeps the coverage accounting satisfied so the test
+/// exercises only the visual rule under test.
+fn visual_plan(
+    article_id: String,
+    presentation_type: PresentationType,
+    visual: Option<VisualSpec>,
+    cited: &str,
+) -> WriteNarrationPlanInput {
+    let mut decisions = Vec::new();
+    for block in ["block-1", "block-2", "block-3"] {
+        let treatment = if block == cited {
+            SourceCoverageTreatment::Teach
+        } else {
+            SourceCoverageTreatment::Skip
+        };
+        decisions.push(coverage_decision(&[block], treatment));
+    }
+    WriteNarrationPlanInput {
+        job_id: "job-1".into(),
+        article_id,
+        title: "Visuals".into(),
+        segments: vec![NarrationSegmentDraft {
+            display_text: "Writes pass through a durable log.".into(),
+            tts_text: "Writes pass through a durable log.".into(),
+            source_blocks: vec![cited.into()],
+            presentation_type,
+            importance: NarrationImportance::Core,
+            intent: NarrationIntent::Explanation,
+            provenance: ProvenanceKind::SourceDerived,
+            image_id: None,
+            visual,
+        }],
+        source_coverage_decisions: decisions,
+        image_coverage_decisions: vec![],
+    }
+}
+
+fn diagram_visual() -> VisualSpec {
+    VisualSpec::Diagram {
+        nodes: vec![
+            DiagramNode {
+                id: "api".into(),
+                label: "API".into(),
+            },
+            DiagramNode {
+                id: "log".into(),
+                label: "Durable log".into(),
+            },
+        ],
+        edges: vec![DiagramEdge {
+            from: "api".into(),
+            to: "log".into(),
+            label: String::new(),
+        }],
+    }
+}
+
+#[test]
+fn narration_visual_specs_are_required_where_drawn_and_forbidden_elsewhere() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+    let article = ArticleIngestionService::new(service.clone())
+        .persist_response(
+            "job-1",
+            "https://example.com/article",
+            "https://example.com/article",
+            200,
+            Some("text/html"),
+            br#"<article><h1>Durable logs</h1><p>Writes pass through a durable log.</p><svg aria-label="Writes flow from the API through the durable log to replicas"><text>API</text><text>Log</text></svg></article>"#,
+        )
+        .expect("persist article")
+        .article;
+    let tools = DigestTools::new(service);
+    let article_id = article.artifact_id.clone();
+
+    let error = tools
+        .write_narration_plan(visual_plan(
+            article_id.clone(),
+            PresentationType::Diagram,
+            None,
+            "block-3",
+        ))
+        .expect_err("diagram without a visual must fail");
+    assert!(error.to_string().contains("carries no `diagram` visual"));
+
+    let error = tools
+        .write_narration_plan(visual_plan(
+            article_id.clone(),
+            PresentationType::ConceptCard,
+            None,
+            "block-2",
+        ))
+        .expect_err("concept card without points must fail");
+    assert!(error.to_string().contains("carries no `points` visual"));
+
+    let error = tools
+        .write_narration_plan(visual_plan(
+            article_id.clone(),
+            PresentationType::ArticleText,
+            Some(diagram_visual()),
+            "block-2",
+        ))
+        .expect_err("visual on article text must fail");
+    assert!(error.to_string().contains("not `diagram` or `concept-card`"));
+
+    let written = tools
+        .write_narration_plan(visual_plan(
+            article_id.clone(),
+            PresentationType::ConceptCard,
+            Some(VisualSpec::Points {
+                items: vec!["Log first.".into(), "Replicas follow.".into()],
+            }),
+            "block-2",
+        ))
+        .expect("points card must pass");
+    assert_eq!(
+        written.payload["segments"][0]["presentation"]["visual"]["type"],
+        "points"
+    );
+    assert_eq!(written.payload["schemaVersion"], "1.5");
+}
+
+#[test]
+fn narration_diagram_edges_must_reference_defined_nodes() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+    let article = ArticleIngestionService::new(service.clone())
+        .persist_response(
+            "job-1",
+            "https://example.com/article",
+            "https://example.com/article",
+            200,
+            Some("text/html"),
+            br#"<article><h1>Durable logs</h1><p>Writes pass through a durable log.</p><svg aria-label="Writes flow from the API through the durable log to replicas"><text>API</text><text>Log</text></svg></article>"#,
+        )
+        .expect("persist article")
+        .article;
+    let tools = DigestTools::new(service);
+
+    let error = tools
+        .write_narration_plan(visual_plan(
+            article.artifact_id,
+            PresentationType::Diagram,
+            Some(VisualSpec::Diagram {
+                nodes: vec![
+                    DiagramNode {
+                        id: "api".into(),
+                        label: "API".into(),
+                    },
+                    DiagramNode {
+                        id: "log".into(),
+                        label: "Durable log".into(),
+                    },
+                ],
+                edges: vec![DiagramEdge {
+                    from: "api".into(),
+                    to: "ghost".into(),
+                    label: String::new(),
+                }],
+            }),
+            "block-3",
+        ))
+        .expect_err("dangling edge must fail");
+    let message = error.to_string();
+    assert!(message.contains("undefined node"), "{message}");
+    assert!(message.contains("ghost"), "{message}");
+}
+
+#[test]
+fn narration_plans_ignore_images_without_bytes() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+    let article = ArticleIngestionService::new(service.clone())
+        .persist_response(
+            "job-1",
+            "https://example.com/article",
+            "https://example.com/article",
+            200,
+            Some("text/html"),
+            b"<article><h1>Durable logs</h1><p>Writes pass through a durable log.</p><img src=\"http://127.0.0.1:9/unreachable.png\" alt=\"Unreachable figure\" width=\"800\" height=\"400\"></article>",
+        )
+        .expect("persist article")
+        .article;
+    assert!(
+        article.payload["images"]
+            .as_array()
+            .expect("images array")
+            .iter()
+            .all(|image| image["captureStatus"] != "localized"),
+        "unlocalized images carry no bytes to show"
+    );
+    let tools = DigestTools::new(service);
+
+    let written = tools
+        .write_narration_plan(WriteNarrationPlanInput {
+            job_id: "job-1".into(),
+            article_id: article.artifact_id,
+            title: "Durable logs".into(),
+            segments: vec![NarrationSegmentDraft {
+                display_text: "Writes pass through a durable log.".into(),
+                tts_text: "Writes pass through a durable log.".into(),
+                source_blocks: vec!["block-2".into()],
+                presentation_type: PresentationType::ArticleText,
+                importance: NarrationImportance::Core,
+                intent: NarrationIntent::Explanation,
+                provenance: ProvenanceKind::SourceDerived,
+                visual: None,
+                image_id: None,
+            }],
+            source_coverage_decisions: vec![
+                coverage_decision(&["block-1"], SourceCoverageTreatment::Skip),
+                coverage_decision(&["block-2"], SourceCoverageTreatment::Teach),
+            ],
+            image_coverage_decisions: vec![],
+        })
+        .expect("failed images need no decision");
+
+    assert_eq!(written.payload["schemaVersion"], "1.5");
+    assert_eq!(
+        written.payload["diagnostics"]["localizedImageCount"],
+        0
     );
 }
 
@@ -341,11 +615,14 @@ fn narration_rejects_tts_text_that_adds_new_explanation() {
                 importance: NarrationImportance::Core,
                 intent: NarrationIntent::Explanation,
                 provenance: ProvenanceKind::SourceDerived,
+                image_id: None,
+                visual: None,
             }],
             source_coverage_decisions: vec![
                 coverage_decision(&["block-1"], SourceCoverageTreatment::Skip),
                 coverage_decision(&["block-2"], SourceCoverageTreatment::Teach),
             ],
+            image_coverage_decisions: vec![],
         })
         .expect_err("ttsText must not add educational content");
 
@@ -439,7 +716,8 @@ mod self_correcting_errors {
             "sourceCoverageDecisions": [
                 { "sourceBlocks": ["block-1"], "treatment": "skip", "rationale": "Title only." },
                 { "sourceBlocks": ["block-2"], "treatment": "teach", "rationale": "Core claim." }
-            ]
+            ],
+            "imageCoverageDecisions": []
         })
     }
 
@@ -830,7 +1108,8 @@ mod self_correcting_errors {
                         "treatment": "teach",
                         "rationale": "Core claim."
                     }
-                ]
+                ],
+                "imageCoverageDecisions": []
             }))
             .expect_err("every block must be accounted for");
 

@@ -14,7 +14,7 @@ use std::{
 use thiserror::Error;
 use url::Url;
 
-const ARTICLE_SCHEMA_VERSION: &str = "1.2";
+const ARTICLE_SCHEMA_VERSION: &str = "1.3";
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
@@ -57,29 +57,62 @@ pub enum ArticleBlock {
         id: String,
         level: u8,
         text: String,
+        /// Ids of article images positioned at this block, in document order.
+        /// Images attach to the nearest preceding kept block; leading images
+        /// attach to the first block. Absent on articles extracted before
+        /// image linkage existed.
+        #[serde(default, rename = "imageIds")]
+        image_ids: Vec<String>,
     },
     Paragraph {
         id: String,
         text: String,
+        /// Ids of article images positioned at this block, in document order.
+        #[serde(default, rename = "imageIds")]
+        image_ids: Vec<String>,
     },
     Code {
         id: String,
         language: Option<String>,
         text: String,
+        /// Ids of article images positioned at this block, in document order.
+        #[serde(default, rename = "imageIds")]
+        image_ids: Vec<String>,
     },
     List {
         id: String,
         ordered: bool,
         items: Vec<String>,
+        /// Ids of article images positioned at this block, in document order.
+        #[serde(default, rename = "imageIds")]
+        image_ids: Vec<String>,
     },
     Quote {
         id: String,
         text: String,
+        /// Ids of article images positioned at this block, in document order.
+        #[serde(default, rename = "imageIds")]
+        image_ids: Vec<String>,
     },
     Diagram {
         id: String,
         text: String,
+        /// Ids of article images positioned at this block, in document order.
+        #[serde(default, rename = "imageIds")]
+        image_ids: Vec<String>,
     },
+}
+
+fn push_block_image(block: &mut ArticleBlock, image_id: &str) {
+    let image_ids = match block {
+        ArticleBlock::Heading { image_ids, .. }
+        | ArticleBlock::Paragraph { image_ids, .. }
+        | ArticleBlock::Code { image_ids, .. }
+        | ArticleBlock::List { image_ids, .. }
+        | ArticleBlock::Quote { image_ids, .. }
+        | ArticleBlock::Diagram { image_ids, .. } => image_ids,
+    };
+    image_ids.push(image_id.into());
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,10 +312,33 @@ impl ArticleIngestionService {
         let document = Html::parse_document(&html);
         let root = select_root(&document)?;
         let selected_article_root = root.value().name() == "article";
-        let block_selector = selector("h1,h2,h3,h4,h5,h6,p,pre,ul,ol,blockquote,svg")?;
+        // Blocks and images walk in one document-order pass so each image can be
+        // linked to the block it illustrates. An image attaches to the nearest
+        // preceding kept block; images before the first block attach to it.
+        // Images after the trailing boilerplate boundary are post-content
+        // chrome (related-article thumbnails, footer marks) and never surface.
+        let content_selector =
+            selector("h1,h2,h3,h4,h5,h6,p,pre,ul,ol,blockquote,svg,img[src]")?;
         let mut blocks = Vec::new();
+        let mut images = Vec::new();
+        let mut pending_images: Vec<String> = Vec::new();
+        let mut ignored_decorative_images = 0;
         let mut pruned_boilerplate = false;
-        for element in root.select(&block_selector) {
+        for element in root.select(&content_selector) {
+            if element.value().name() == "img" {
+                let Some(mut image) = extract_image(element, &base_url) else {
+                    ignored_decorative_images += 1;
+                    continue;
+                };
+                image.id = format!("image-{}", images.len() + 1);
+                let image_id = image.id.clone();
+                images.push(image);
+                match blocks.last_mut() {
+                    Some(block) => push_block_image(block, &image_id),
+                    None => pending_images.push(image_id),
+                }
+                continue;
+            }
             let text = element_text(element);
             if is_trailing_boilerplate_boundary(element.value().name(), &text) {
                 pruned_boilerplate = true;
@@ -297,51 +353,11 @@ impl ArticleIngestionService {
                 blocks.push(block);
             }
         }
-        let image_selector = selector("img[src]")?;
-        let mut ignored_decorative_images = 0;
-        let images: Vec<_> = root
-            .select(&image_selector)
-            .filter_map(|element| {
-                let source = element.value().attr("src")?;
-                let source_url = base_url.join(source).ok()?.to_string();
-                let alt = optional_text(element.value().attr("alt"));
-                let title = optional_text(element.value().attr("title"));
-                let caption = image_caption(element);
-                let width = numeric_attribute(element, "width");
-                let height = numeric_attribute(element, "height");
-                if is_decorative_image(
-                    element,
-                    alt.as_deref(),
-                    title.as_deref(),
-                    caption.as_deref(),
-                ) {
-                    ignored_decorative_images += 1;
-                    return None;
-                }
-                Some(ArticleImage {
-                    id: String::new(),
-                    original_url: source.into(),
-                    source_url,
-                    alt,
-                    title,
-                    caption,
-                    width,
-                    height,
-                    srcset_candidates: srcset_candidates(element, &base_url),
-                    capture_status: ImageCaptureStatus::Pending,
-                    artifact_id: None,
-                    mime_type: None,
-                    content_hash: None,
-                    byte_length: None,
-                    error: None,
-                })
-            })
-            .enumerate()
-            .map(|(index, mut image)| {
-                image.id = format!("image-{}", index + 1);
-                image
-            })
-            .collect();
+        if let Some(first) = blocks.first_mut() {
+            for image_id in pending_images {
+                push_block_image(first, &image_id);
+            }
+        }
         let title = first_text(root, "h1")?.or_else(|| {
             document
                 .select(&Selector::parse("title").expect("valid title selector"))
@@ -710,8 +726,13 @@ fn article_block(
             id,
             level: tag[1..].parse().unwrap_or(1),
             text,
+            image_ids: Vec::new(),
         },
-        "p" => ArticleBlock::Paragraph { id, text },
+        "p" => ArticleBlock::Paragraph {
+            id,
+            text,
+            image_ids: Vec::new(),
+        },
         "pre" => {
             let language = element
                 .select(&selector("code")?)
@@ -723,7 +744,12 @@ fn article_block(
                         .find_map(|name| name.strip_prefix("language-"))
                 })
                 .map(str::to_owned);
-            ArticleBlock::Code { id, language, text }
+            ArticleBlock::Code {
+                id,
+                language,
+                text,
+                image_ids: Vec::new(),
+            }
         }
         "ul" | "ol" => {
             let item_selector = selector(":scope > li")?;
@@ -736,13 +762,59 @@ fn article_block(
                 id,
                 ordered: tag == "ol",
                 items,
+                image_ids: Vec::new(),
             }
         }
-        "blockquote" => ArticleBlock::Quote { id, text },
-        "svg" => ArticleBlock::Diagram { id, text },
+        "blockquote" => ArticleBlock::Quote {
+            id,
+            text,
+            image_ids: Vec::new(),
+        },
+        "svg" => ArticleBlock::Diagram {
+            id,
+            text,
+            image_ids: Vec::new(),
+        },
         _ => return Ok(None),
     };
     Ok(Some(block))
+}
+
+/// Build the record for one `img` element, or `None` when it is decorative.
+/// The caller assigns the document-order id and links it to a block.
+fn extract_image(element: ElementRef<'_>, base_url: &Url) -> Option<ArticleImage> {
+    let source = element.value().attr("src")?;
+    let source_url = base_url.join(source).ok()?.to_string();
+    let alt = optional_text(element.value().attr("alt"));
+    let title = optional_text(element.value().attr("title"));
+    let caption = image_caption(element);
+    let width = numeric_attribute(element, "width");
+    let height = numeric_attribute(element, "height");
+    if is_decorative_image(
+        element,
+        alt.as_deref(),
+        title.as_deref(),
+        caption.as_deref(),
+    ) {
+        return None;
+    }
+    Some(ArticleImage {
+        id: String::new(),
+        original_url: source.into(),
+        source_url,
+        alt,
+        title,
+        caption,
+        width,
+        height,
+        srcset_candidates: srcset_candidates(element, base_url),
+        capture_status: ImageCaptureStatus::Pending,
+        artifact_id: None,
+        mime_type: None,
+        content_hash: None,
+        byte_length: None,
+        error: None,
+    })
 }
 
 fn first_text(root: ElementRef<'_>, query: &str) -> Result<Option<String>, IngestionError> {

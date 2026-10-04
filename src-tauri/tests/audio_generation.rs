@@ -2,7 +2,7 @@ use digest_lib::{
     ArticleIngestionService, AudioCancellation, AudioError, AudioGenerationRequest,
     AudioGenerationService, AudioProvider, AudioRequest, DigestService, DigestTools,
     NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType, ProvenanceKind,
-    SourceCoverageDecision, SourceCoverageTreatment, WriteNarrationPlanInput,
+    SourceCoverageDecision, SourceCoverageTreatment, VisualSpec, WriteNarrationPlanInput,
 };
 use std::{
     future::Future,
@@ -67,6 +67,13 @@ async fn generates_timed_segment_audio_and_reuses_cached_audio() {
                 importance: NarrationImportance::Core,
                 intent: NarrationIntent::Explanation,
                 provenance: ProvenanceKind::SourceDerived,
+                image_id: None,
+                visual: Some(VisualSpec::Points {
+                    items: vec![
+                        "Producers append.".into(),
+                        "Consumers follow.".into(),
+                    ],
+                }),
             }],
             source_coverage_decisions: vec![
                 SourceCoverageDecision {
@@ -80,6 +87,7 @@ async fn generates_timed_segment_audio_and_reuses_cached_audio() {
                     rationale: "The article's central concept.".into(),
                 },
             ],
+            image_coverage_decisions: vec![],
         })
         .expect("persist narration plan");
     let calls = Arc::new(AtomicUsize::new(0));

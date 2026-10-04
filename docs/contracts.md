@@ -87,7 +87,7 @@ type Artifact = {
 | `AudioSegment` | `audio_segment` | audio segment metadata; the bytes live in the object store |
 | `PlaybackManifest` | `playback_manifest` | the manifest (see below) |
 
-`schemaVersion` on the envelope is the *envelope* version, fixed at `"1.0"` by `ARTIFACT_SCHEMA_VERSION` in `src-tauri/src/application.rs:15`. It is not the version of the payload inside. Payloads carry their own `schemaVersion`: the normalized article is `"1.2"`, an audio segment is `"1.1"`, and a playback manifest is `"1.2"`.
+`schemaVersion` on the envelope is the *envelope* version, fixed at `"1.0"` by `ARTIFACT_SCHEMA_VERSION` in `src-tauri/src/application.rs:15`. It is not the version of the payload inside. Payloads carry their own `schemaVersion`: the normalized article is `"1.3"`, an audio segment is `"1.1"`, a narration plan is `"1.5"`, and a playback manifest is `"1.4"`.
 
 ```ts
 type RunAttempt = {
@@ -145,7 +145,7 @@ The normalized article is a flat ordered block list, not a section tree. A block
 
 ```ts
 type NormalizedArticle = {
-  schemaVersion: string;        // "1.2"
+  schemaVersion: string;        // "1.3"
   canonicalUrl: string;
   title: string | null;
   blocks: ArticleBlock[];
@@ -154,12 +154,14 @@ type NormalizedArticle = {
 };
 
 type ArticleBlock =
-  | { kind: "heading"; id: string; level: number; text: string }
-  | { kind: "paragraph"; id: string; text: string }
-  | { kind: "code"; id: string; language: string | null; text: string }
-  | { kind: "list"; id: string; ordered: boolean; items: string[] }
-  | { kind: "quote"; id: string; text: string }
-  | { kind: "diagram"; id: string; text: string };
+  | { kind: "heading"; id: string; level: number; text: string; imageIds: string[] }
+  | { kind: "paragraph"; id: string; text: string; imageIds: string[] }
+  | { kind: "code"; id: string; language: string | null; text: string; imageIds: string[] }
+  | { kind: "list"; id: string; ordered: boolean; items: string[]; imageIds: string[] }
+  | { kind: "quote"; id: string; text: string; imageIds: string[] }
+  | { kind: "diagram"; id: string; text: string; imageIds: string[] };
+
+`imageIds` links each article image to the block it illustrates, in document order: an image attaches to the nearest preceding kept block, and images before the first block attach to it. Images after the trailing boilerplate boundary are post-content chrome and never surface. Old articles without the key read as imageless, which is exactly what their plans assumed.
 
 type ArticleImage = {
   id: string;
@@ -258,10 +260,19 @@ type NarrationSegmentDraft = {
   ttsText: string;
   sourceBlocks: string[];
   presentationType: PresentationType;
+  visual?: VisualSpec;              // required for diagram and concept-card, forbidden elsewhere
+  imageId?: string;                 // required for image segments, forbidden elsewhere
   importance: NarrationImportance;
   intent: NarrationIntent;
   provenance: ProvenanceKind;
 };
+
+// Authored visual content (narration schema 1.4+, manifest schema 1.4+). The
+// player draws exactly this; nothing is inferred from displayText. Segments
+// from older plans carry no visual and fall back to the narration text.
+type VisualSpec =
+  | { type: "diagram"; nodes: { id: string; label: string }[]; edges: { from: string; to: string; label?: string }[] }
+  | { type: "points"; items: string[] };
 
 type SourceCoverageTreatment = "teach" | "summarize" | "skip";
 
@@ -277,10 +288,19 @@ type WriteNarrationPlanInput = {
   title: string;
   segments: NarrationSegmentDraft[];
   sourceCoverageDecisions: SourceCoverageDecision[];
+  imageCoverageDecisions: ImageCoverageDecision[];
+};
+
+type ImageCoverageTreatment = "present" | "skip";
+
+type ImageCoverageDecision = {
+  imageIds: string[];               // localized images only; decorative ones never surface
+  treatment: ImageCoverageTreatment;
+  rationale: string;
 };
 ```
 
-`PresentationType` is the only enum in the crate serialized kebab-case; everything else on this seam is snake_case for enums and camelCase for structs. Every source block and every diagram block must appear in exactly one `sourceCoverageDecision`, and every `teach` or `summarize` block must be cited by a segment. `write_narration_plan` rejects the plan otherwise and returns coverage and compression diagnostics rather than silently accepting an incomplete account.
+`PresentationType` is the only enum in the crate serialized kebab-case; everything else on this seam is snake_case for enums and camelCase for structs. Every source block and every diagram block must appear in exactly one `sourceCoverageDecision`, and every `teach` or `summarize` block must be cited by a segment. Every localized image must appear in exactly one `imageCoverageDecision`, and every `present` image must be shown by an `image` segment carrying its `imageId`; images that failed localization carry no bytes and need no decision. `write_narration_plan` rejects the plan otherwise and returns coverage, image, and compression diagnostics rather than silently accepting an incomplete account.
 
 ---
 
@@ -464,6 +484,8 @@ A minimal `1.2` manifest, two sentences inside one segment:
 ```
 
 `provenance` and `presentation` are opaque `serde_json::Value` on the Rust side and are copied from the narration plan without interpretation. The generator does not validate them; `write_narration_plan` does.
+
+`1.3` kept the `1.2` shape and added authored visuals inside `presentation`; it never shipped, so `1.4` is the next released manifest and carries both additions. A `diagram` segment carries `{"type": "diagram", "visual": {"type": "diagram", "nodes": [...], "edges": [...]}}` and a `concept-card` segment carries `{"type": "concept-card", "visual": {"type": "points", "items": [...]}}`, both written by `write_narration_plan` under narration schema `1.5`. An `image` segment carries `{"image": {"imageId", "artifactId", "mimeType", "alt", "caption", "width", "height"}}` alongside `"presentation": {"type": "image"}`; the player fetches the bytes through the binary artifact endpoint and the key is omitted on every other segment. Segments from older plans carry neither key and fall back to the narration text, so every stored lesson keeps playing. The flat clip-list normalization is unchanged: `1.4` needs no new reader shape.
 
 The `1.2` shape exists because of how the audio is stored. `split_into_sentence_parts` in `src-tauri/src/audio.rs:488` splits a segment's `ttsText` at sentence boundaries — a sentence ends at `.`, `!`, or `?` plus any trailing closing quote or bracket, followed by whitespace — and each part becomes its own `audio_segment` artifact. Parts shorter than 40 characters merge forward, and a short trailing fragment merges backward, so abbreviations like `E.g.` never become a degenerate synthesis request. Concatenating the parts reproduces the complete `ttsText`: this is transport subdivision, never a content limit.
 

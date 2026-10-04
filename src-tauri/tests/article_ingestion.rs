@@ -85,6 +85,60 @@ fn extraction_prefers_article_content_and_resolves_images() {
     );
     assert!(article.diagnostics.confidence >= 60);
     assert_eq!(article.diagnostics.image_count, 1);
+    let figure_block = article
+        .blocks
+        .iter()
+        .find(|block| {
+            block_image_ids(block).contains(&"image-1".to_string())
+        })
+        .expect("figure image links to its preceding block");
+    assert!(
+        matches!(figure_block, ArticleBlock::Quote { text, .. } if text == "Keep the source immutable."),
+        "image after the blockquote attaches to the blockquote, not to a later block: {figure_block:?}"
+    );
+}
+
+fn block_image_ids(block: &ArticleBlock) -> &[String] {
+    match block {
+        ArticleBlock::Heading { image_ids, .. }
+        | ArticleBlock::Paragraph { image_ids, .. }
+        | ArticleBlock::Code { image_ids, .. }
+        | ArticleBlock::List { image_ids, .. }
+        | ArticleBlock::Quote { image_ids, .. }
+        | ArticleBlock::Diagram { image_ids, .. } => image_ids,
+    }
+}
+
+#[test]
+fn extraction_links_leading_images_to_the_first_block_and_drops_post_content_images() {
+    let article = ArticleIngestionService::extract(
+        "https://example.com/posts/hero",
+        br#"
+        <html><body>
+          <article>
+            <img src="/hero.png" alt="Hero figure" width="1200" height="600">
+            <h1>Hero article</h1>
+            <p>Opening paragraph.</p>
+            <h2>Related posts</h2>
+            <img src="/thumbnail.png" alt="Related thumbnail" width="800" height="400">
+          </article>
+        </body></html>"#,
+    )
+    .expect("extract article");
+
+    assert_eq!(article.images.len(), 1, "only the hero image survives");
+    assert_eq!(article.images[0].id, "image-1");
+    assert_eq!(
+        block_image_ids(&article.blocks[0]),
+        &["image-1".to_string()],
+        "leading image attaches to the first block"
+    );
+    assert!(
+        article.blocks.iter().all(|block| {
+            !block_image_ids(block).iter().any(|id| id != "image-1")
+        }),
+        "post-boundary images never surface"
+    );
 }
 
 #[test]

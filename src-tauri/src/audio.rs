@@ -12,7 +12,7 @@ use std::{
 };
 use thiserror::Error;
 
-const PLAYBACK_MANIFEST_SCHEMA_VERSION: &str = "1.2";
+const PLAYBACK_MANIFEST_SCHEMA_VERSION: &str = "1.4";
 /// Sentence parts shorter than this merge with the following sentence so
 /// abbreviations and terse fragments never become degenerate TTS requests.
 const MIN_SENTENCE_PART_CHARS: usize = 40;
@@ -189,6 +189,10 @@ struct NarrationSegment {
     source_blocks: Vec<String>,
     provenance: Value,
     presentation: Value,
+    /// Projected figure for `image` segments, absent on every other segment
+    /// and on plans written before image segments existed.
+    #[serde(default)]
+    image: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -232,6 +236,10 @@ struct ManifestSegment {
     source_blocks: Vec<String>,
     provenance: Value,
     presentation: Value,
+    /// Projected figure for `image` segments. Omitted everywhere else, so
+    /// manifests without figures are byte-identical to the previous shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -454,6 +462,7 @@ impl<P: AudioProvider> AudioGenerationService<P> {
                 source_blocks: segment.source_blocks,
                 provenance: segment.provenance,
                 presentation: segment.presentation,
+                image: segment.image,
             });
         }
 
@@ -811,7 +820,7 @@ mod tests {
         assert_eq!(result.generated_segment_count, 2);
         assert_eq!(result.reused_segment_count, 0);
         let manifest = &result.manifest.payload;
-        assert_eq!(manifest["schemaVersion"], "1.2");
+        assert_eq!(manifest["schemaVersion"], "1.4");
         assert_eq!(manifest["audio"]["durationMs"], 2_000);
         assert_eq!(manifest["segments"][0]["startMs"], 0);
         assert_eq!(manifest["segments"][0]["endMs"], 1_000);
@@ -820,6 +829,65 @@ mod tests {
         assert_eq!(manifest["segments"][0]["parts"][0]["endMs"], 1_000);
         assert_eq!(manifest["segments"][1]["startMs"], 1_000);
         assert_eq!(manifest["segments"][1]["endMs"], 2_000);
+    }
+
+    #[tokio::test]
+    async fn manifest_carries_segment_figures_and_omits_the_key_elsewhere() {
+        let directory = tempfile::tempdir().expect("create temporary data directory");
+        let service =
+            Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+        persist_plan_segments(
+            &service,
+            vec![
+                serde_json::json!({
+                    "id": "s-1",
+                    "displayText": "The network map shows worldwide points of presence.",
+                    "ttsText": "The network map shows worldwide points of presence.",
+                    "sourceBlocks": ["block-1"],
+                    "provenance": { "kind": "source" },
+                    "presentation": { "type": "image" },
+                    "image": {
+                        "imageId": "image-2",
+                        "artifactId": "artifact-image-2",
+                        "mimeType": "image/webp",
+                        "alt": "World map of points of presence",
+                        "caption": serde_json::Value::Null,
+                    },
+                }),
+                serde_json::json!({
+                    "id": "s-2",
+                    "displayText": "Spoken text for s-2.",
+                    "ttsText": "Spoken text for s-2.",
+                    "sourceBlocks": ["block-1"],
+                    "provenance": { "kind": "source" },
+                    "presentation": { "type": "text" },
+                }),
+            ],
+        );
+        let provider = FakeProvider::new(
+            "audio/ogg",
+            vec![Ok(one_second_ogg_opus(0)), Ok(one_second_ogg_opus(0))],
+        );
+
+        let result = AudioGenerationService::new(Arc::clone(&service), provider)
+            .generate("job-1", &request("voice-a"), &AudioCancellation::new(), |_| {})
+            .await
+            .unwrap();
+
+        let figure = &result.manifest.payload["segments"][0]["image"];
+        assert_eq!(figure["imageId"], "image-2");
+        assert_eq!(figure["artifactId"], "artifact-image-2");
+        assert_eq!(figure["mimeType"], "image/webp");
+        assert_eq!(
+            figure["alt"],
+            "World map of points of presence"
+        );
+        assert!(
+            result.manifest.payload["segments"][1]
+                .get("image")
+                .is_none(),
+            "segments without figures omit the image key entirely"
+        );
     }
 
     #[tokio::test]
@@ -1159,6 +1227,10 @@ mod tests {
                 })
             })
             .collect();
+        persist_plan_segments(service, segments);
+    }
+
+    fn persist_plan_segments(service: &DigestService, segments: Vec<serde_json::Value>) {
         service
             .persist_json_artifact(
                 "job-1",

@@ -471,3 +471,62 @@ The player is a component inside `src/App.tsx` rather than a `src/player/` modul
 
 **When to Revisit:**
 - Revisit when a `1.3` arrives, and the question is then whether the flat clip list is still the right normalization or whether a nested one is needed. Revisit sooner if a second playback surface appears, at which point the clip model should move into a shared module.
+
+---
+
+## D-016 — Structured visual specs drawn as SVG, not an embedded diagram language
+
+- **Status:** Accepted
+- **Date:** 2026-10-04
+
+**Context:** The evaluated lesson carries 9 diagram segments, 6 concept cards, and 1 callout, but the manifest held only a type tag per segment (`{"type": "diagram"}` with nothing to draw), so the player could show nothing beyond the narration text. Two ways to give the agent a drawing surface. Either accept an embedded diagram language (Mermaid text authored per segment and rendered by a Mermaid dependency), or accept structured specs (nodes/edges for diagrams, bullets for cards) drawn by a hand-rolled SVG renderer.
+
+**Decision:** Structured specs, drawn as inline SVG with a deterministic layered layout. Diagrams are `{nodes: [{id, label}], edges: [{from, to, label}]}` with 2–12 nodes and 1–24 edges; cards are `{items}` with 2–6 bullets. The bounds constrain the drawable area, not the article content: findings, segments, and durations stay uncapped. Labels paraphrase the segment's cited blocks, so the visual inherits the segment's grounding and needs no separate faithfulness check.
+
+The player draws exactly the authored spec and infers nothing. Layout is longest-path layering into columns with fixed node geometry and orthogonal elbow edges, so the same spec always draws the same figure. Node-level active highlighting is deliberately absent: there is no per-node timing until word alignment exists, and inventing a mapping would be decoration presented as data.
+
+**Alternatives Considered:**
+
+| Alternative | Why Not |
+| :--- | :--- |
+| **Mermaid text plus a Mermaid dependency** | A large JavaScript dependency in an offline, deterministic player; layout the player cannot control or audit; and a free-text surface the validator can only lint, not verify. |
+| **Infer visuals from displayText** | Decoration presented as authorship. A layout derived from prose cannot be validated, corrected, or cited, and it teaches the agent that specs are optional. |
+| **Full presentation component set now (code walkthroughs, charts, flows)** | No observed plan has needed them. The schema admits new `VisualSpec` variants without disturbing the two that exist. |
+
+**Tradeoffs & Caveats:**
+- Twelve nodes is a ceiling on ambition per diagram. A genuinely larger structure must be split across segments, which is also better narration.
+- The SVG renderer lives in the single-file player. When a second surface needs visuals, the layout math is the thing to extract.
+- Plans written before visual specs (narration `1.3` and earlier) carry no `visual` key and fall back to the narration text. Nothing stored stops playing.
+
+**When to Revisit:**
+- Revisit when a plan needs a visual this schema cannot express (code stepping, quantitative charts). Add a variant; do not widen diagram bounds to cover it.
+- Revisit node-level highlighting when word timing exists. Sentence parts already subdivide the audio; mapping them to nodes needs authored alignment, not inference.
+
+---
+
+## D-017 — Localized figures are covered like blocks, shown by image segments
+
+- **Status:** Accepted
+- **Date:** 2026-10-04
+
+**Context:** Ingestion localized real article figures to disk (a network map, screenshots, the hero image) while correctly discarding tracking pixels, favicons, and duplicates. Everything downstream then ignored them: blocks never referenced an image, coverage never accounted for one, no narration segment could name one, and the player had no `<img>`. The figures sat in the content-addressed store while lessons played audio over text that never showed them.
+
+**Decision:** Link each image to its block in document order during extraction (nearest preceding kept block; leading images to the first block), and cover images with the same accountability as blocks. Every localized image appears in exactly one `imageCoverageDecision` as `present` or `skip`; every `present` image is shown by an `image` segment naming its `imageId`. Images that failed localization carry no bytes and need no decision. The segment projects `{imageId, artifactId, mimeType, alt, caption, width, height}` into the manifest (schema `1.4`), and the player fetches the bytes through the existing binary artifact endpoint, so no new serving command was needed. Figures render with intrinsic aspect ratio reserved, so they arrive without shifting the text.
+
+**Alternatives Considered:**
+
+| Alternative | Why Not |
+| :--- | :--- |
+| **Fold images into block decisions** | Blocks and images have different lifecycles (a taught block's figure can still be skipped) and different consumers. One axis per decision keeps the validator's messages precise. |
+| **Auto-present every localized image** | Removes the agent's judgment about which figures teach and which decorate. The avatar is localized and almost never belongs in a lesson; that call needs a rationale. |
+| **A new image-serving command** | The binary artifact endpoint already serves bytes by id. A second command would be a second name for the same read. |
+| **Author alt text or captions at plan time** | The ingestion already records both from the source document. Re-authoring them invites drift between the figure and its description. |
+
+**Tradeoffs & Caveats:**
+- The block linkage is positional, not semantic: a figure between two paragraphs attaches to the earlier one even when it illustrates the later one. The agent sees the linkage as context, not as a constraint; segment citations are not required to match it.
+- Coverage now has two decision arrays. Plans against articles with no localized images send an empty array, which is explicit rather than defaulted.
+- Failed-localization images are silently uncovered. Their absence is recorded in the ingestion diagnostics warnings, which is where an operator looks for fetch problems.
+
+**When to Revisit:**
+- Revisit if figures need authored treatment (cropping, annotation, zoom regions). That is a `VisualSpec` variant, not an extension of the image reference.
+- Revisit if an article's figures outnumber what narration pacing can hold. One figure per segment is a pacing choice, not a schema limit.

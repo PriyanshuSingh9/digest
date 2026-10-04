@@ -215,6 +215,70 @@ pub struct NarrationSegmentDraft {
     /// Takes the ProvenanceKind vocabulary (`source_derived`, `ai_explanation`, `ai_inference`,
     /// `generated_educational`), not AnalysisFindingKind and not NarrationIntent.
     pub provenance: ProvenanceKind,
+    /// Authored visual content. Required for `diagram` and `concept-card`
+    /// segments, forbidden for every other presentation type. Absent in plans
+    /// written before visual specs existed; the player falls back to a styled
+    /// text panel for those.
+    #[serde(default)]
+    pub visual: Option<VisualSpec>,
+    /// Localized image this segment shows, e.g. `image-2`. Required for
+    /// `image` segments, forbidden for every other presentation type. Must
+    /// reference an image the ingestion localized for this article.
+    #[serde(default)]
+    pub image_id: Option<String>,
+}
+
+/// One node in an authored diagram. The label paraphrases the segment's cited
+/// source blocks; the visual inherits the segment's grounding, so no separate
+/// text needs citing.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagramNode {
+    /// Unique within the diagram. Edges reference nodes by this id.
+    pub id: String,
+    /// Short node text, at most 200 characters. A node is a label, not a
+    /// paragraph; the explanation lives in `displayText`.
+    pub label: String,
+}
+
+/// One directed edge in an authored diagram.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagramEdge {
+    /// The id of the node the edge leaves.
+    pub from: String,
+    /// The id of the node the edge enters. Must differ from `from`.
+    pub to: String,
+    /// Optional edge annotation, at most 200 characters. Empty when the
+    /// relationship needs no words.
+    #[serde(default)]
+    pub label: String,
+}
+
+/// Authored visual content for segments whose presentation needs more than the
+/// spoken text. The renderer draws exactly this; nothing is inferred from
+/// `displayText`. Bounds below (node and item counts, label lengths) bound the
+/// drawable area, not the article content: findings, segments, and durations
+/// stay uncapped.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum VisualSpec {
+    /// A node-and-edge diagram. Required for `diagram` segments, forbidden
+    /// everywhere else.
+    Diagram {
+        /// Two to twelve nodes. One node is a card, not a diagram; past twelve
+        /// the drawing becomes a poster no player layout can hold.
+        nodes: Vec<DiagramNode>,
+        /// One to twenty-four edges, each referencing a node id defined in
+        /// this same spec.
+        edges: Vec<DiagramEdge>,
+    },
+    /// A bulleted takeaway card. Required for `concept-card` segments,
+    /// forbidden everywhere else.
+    Points {
+        /// Two to six bullets, each non-empty and at most 200 characters.
+        items: Vec<String>,
+    },
 }
 
 /// How a narration segment is drawn on screen, in kebab-case.
@@ -332,6 +396,37 @@ pub struct SourceCoverageDecision {
     pub rationale: String,
 }
 
+/// How a localized article image is handled: `present` or `skip`.
+/// A `present` image must be shown by at least one segment whose
+/// `presentationType` is `image`; a `skip` image must be shown by none.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageCoverageTreatment {
+    Present,
+    Skip,
+}
+
+impl ImageCoverageTreatment {
+    /// Every variant, so error messages can never list a name serde would reject.
+    pub const ALL: [Self; 2] = [Self::Present, Self::Skip];
+}
+
+/// An explicit decision covering one or more localized article images.
+/// Only images the ingestion localized (bytes on disk) are covered; decorative
+/// images never surface and need no decision.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageCoverageDecision {
+    /// Localized image ids this decision covers, e.g. `image-2`. Must not be
+    /// empty, and each image may appear in exactly one decision. Every
+    /// localized image in the article must be accounted for.
+    pub image_ids: Vec<String>,
+    /// How these images are handled: `present` or `skip`.
+    pub treatment: ImageCoverageTreatment,
+    /// Why this treatment was chosen. Must not be empty.
+    pub rationale: String,
+}
+
 /// Arguments for `write_narration_plan`.
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -349,6 +444,10 @@ pub struct WriteNarrationPlanInput {
     /// Array that accounts for every block in the article exactly once.
     /// Required: omitting it is a parameter error, not a defaulted empty list.
     pub source_coverage_decisions: Vec<SourceCoverageDecision>,
+    /// Array that accounts for every localized image in the article exactly once.
+    /// Required: omitting it is a parameter error, not a defaulted empty list.
+    /// Send an empty array only when the article localized no images.
+    pub image_coverage_decisions: Vec<ImageCoverageDecision>,
 }
 
 /// Upper bound on the cells the reported token edit distance will compute, so a pathological
@@ -534,6 +633,17 @@ impl DigestTools {
             &referenced_blocks,
             &presented_diagram_blocks,
         )?;
+        let localized = localized_images(&article);
+        let referenced_images: HashSet<String> = input
+            .segments
+            .iter()
+            .filter_map(|segment| segment.image_id.clone())
+            .collect();
+        let image_coverage_counts = validate_image_coverage(
+            &input.image_coverage_decisions,
+            &localized,
+            &referenced_images,
+        )?;
         let core_segment_count = input
             .segments
             .iter()
@@ -616,26 +726,48 @@ impl DigestTools {
                     describe_source_blocks(&diagram_blocks)
                 )));
             }
-            segments.push(serde_json::json!({
+            validate_visual_spec(index, &segment.presentation_type, &segment.visual)?;
+            let segment_image = validate_segment_image(
+                index,
+                &segment.presentation_type,
+                segment.image_id.as_deref(),
+                &localized,
+            )?;
+            let mut presentation = serde_json::json!({"type": segment.presentation_type});
+            if let Some(visual) = &segment.visual {
+                presentation["visual"] = serde_json::to_value(visual).map_err(|error| {
+                    DigestError::InvalidInput(format!(
+                        "write_narration_plan: narration segment {} visual spec is not \
+                         serializable: {error}",
+                        index + 1
+                    ))
+                })?;
+            }
+            let mut segment_json = serde_json::json!({
                 "id": format!("segment-{}", index + 1),
                 "displayText": segment.display_text,
                 "ttsText": segment.tts_text,
                 "sourceBlocks": segment.source_blocks,
                 "provenance": {"type": segment.provenance},
-                "presentation": {"type": segment.presentation_type},
+                "presentation": presentation,
                 "importance": segment.importance,
                 "intent": segment.intent,
-            }));
+            });
+            if let Some(image) = segment_image {
+                segment_json["image"] = image;
+            }
+            segments.push(segment_json);
         }
         self.service.persist_json_artifact(
             &input.job_id,
             crate::ArtifactKind::NarrationPlan,
             serde_json::json!({
-                "schemaVersion": "1.3",
+                "schemaVersion": "1.5",
                 "articleId": input.article_id,
                 "title": input.title,
                 "segments": segments,
                 "sourceCoverageDecisions": input.source_coverage_decisions,
+                "imageCoverageDecisions": input.image_coverage_decisions,
                 "diagnostics": {
                     "referencedBlockCount": referenced_blocks.len(),
                     "sourceBlockCount": source_blocks.len(),
@@ -644,6 +776,10 @@ impl DigestTools {
                     "taughtBlockCount": coverage_counts.taught,
                     "summarizedBlockCount": coverage_counts.summarized,
                     "skippedBlockCount": coverage_counts.skipped,
+                    "localizedImageCount": localized.len(),
+                    "accountedImageCount": image_coverage_counts.accounted,
+                    "presentedImageCount": image_coverage_counts.presented,
+                    "skippedImageCount": image_coverage_counts.skipped,
                     "coreSegmentCount": core_segment_count,
                     "diagramBlockCount": diagram_blocks.len(),
                     "referencedDiagramCount": presented_diagram_blocks.len(),
@@ -790,6 +926,137 @@ fn source_block_ids(article: &ArtifactEnvelope) -> HashSet<&str> {
         .collect()
 }
 
+/// Images the ingestion localized (bytes on disk), keyed by image id.
+/// Decorative images never surface and need no decision.
+fn localized_images(
+    article: &ArtifactEnvelope,
+) -> std::collections::HashMap<&str, &serde_json::Value> {
+    article
+        .payload
+        .get("images")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|image| {
+            image.get("captureStatus").and_then(serde_json::Value::as_str) == Some("localized")
+        })
+        .filter_map(|image| {
+            image
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(|id| (id, image))
+        })
+        .collect()
+}
+
+#[derive(Debug, Default)]
+struct ImageCoverageCounts {
+    accounted: usize,
+    presented: usize,
+    skipped: usize,
+}
+
+fn validate_image_coverage(
+    decisions: &[ImageCoverageDecision],
+    localized: &std::collections::HashMap<&str, &serde_json::Value>,
+    referenced_images: &HashSet<String>,
+) -> Result<ImageCoverageCounts, DigestError> {
+    let mut seen = HashSet::new();
+    let mut counts = ImageCoverageCounts::default();
+    for (index, decision) in decisions.iter().enumerate() {
+        let path = format!("imageCoverageDecisions[{index}]");
+        let mut empty = Vec::new();
+        if decision.image_ids.is_empty() {
+            empty.push("imageIds (empty array)");
+        }
+        if decision.rationale.trim().is_empty() {
+            empty.push("rationale (empty or whitespace only)");
+        }
+        if !empty.is_empty() {
+            return Err(DigestError::InvalidInput(format!(
+                "write_narration_plan: image coverage decision {} is incomplete: {}. Every \
+                 decision needs a non-empty `imageIds` array of localized image ids and a \
+                 non-empty `rationale`. Corrected decision: {{\"imageIds\": [\"image-2\"], \
+                 \"treatment\": \"present\", \"rationale\": \"Network map illustrates the \
+                 scale claim.\"}}",
+                index + 1,
+                empty.join("; "),
+            )));
+        }
+        for image_id in &decision.image_ids {
+            if !localized.contains_key(image_id.as_str()) {
+                let mut known: Vec<&str> = localized.keys().copied().collect();
+                known.sort();
+                return Err(DigestError::InvalidInput(format!(
+                    "write_narration_plan: {path} references unknown image \"{image_id}\". Only \
+                     images the ingestion localized can be covered; decorative images never \
+                     surface. This article localized {}: {}. Image ids come from the article \
+                     artifact's `images[].id`, so read the article with read_artifact and copy \
+                     the ids from there.",
+                    localized.len(),
+                    if known.is_empty() {
+                        "(none)".to_owned()
+                    } else {
+                        known.join(", ")
+                    }
+                )));
+            }
+            if !seen.insert(image_id.as_str()) {
+                return Err(DigestError::InvalidInput(format!(
+                    "write_narration_plan: image {image_id} has more than one coverage decision. \
+                     Each image may be covered exactly once. Remove the duplicate from \
+                     {path}.imageIds, or merge it into the decision that already lists \
+                     {image_id}."
+                )));
+            }
+            let referenced = referenced_images.contains(image_id);
+            match decision.treatment {
+                ImageCoverageTreatment::Present if !referenced => {
+                    return Err(DigestError::InvalidInput(format!(
+                        "write_narration_plan: image {image_id} is marked `present` in {path} \
+                         but is not shown by a narration segment. Images treated as `present` \
+                         must appear in at least one segment's `imageId` on a segment whose \
+                         `presentationType` is `image`. Fix by adding such a segment, or by \
+                         changing {path}.treatment to `skip` with a rationale that says why the \
+                         image is not shown."
+                    )));
+                }
+                ImageCoverageTreatment::Present => {}
+                ImageCoverageTreatment::Skip if referenced => {
+                    return Err(DigestError::InvalidInput(format!(
+                        "write_narration_plan: image {image_id} is marked `skip` in {path} but \
+                         is shown by a narration segment. The rule is: an image marked `skip` \
+                         must not appear in any segment's `imageId`. Fix either by removing \
+                         {image_id} from every segment that shows it and keeping treatment \
+                         `skip`, or by changing {path}.treatment to `present`."
+                    )));
+                }
+                ImageCoverageTreatment::Skip => {}
+            }
+            counts.accounted += 1;
+            match decision.treatment {
+                ImageCoverageTreatment::Present => counts.presented += 1,
+                ImageCoverageTreatment::Skip => counts.skipped += 1,
+            }
+        }
+    }
+    if seen.len() != localized.len() {
+        let mut uncovered: Vec<&&str> = localized.keys().filter(|id| !seen.contains(**id)).collect();
+        uncovered.sort();
+        return Err(DigestError::InvalidInput(format!(
+            "write_narration_plan: image coverage decisions account for {} of {} localized \
+             images. Unaccounted image(s): {}. Every localized image in the article must appear \
+             in exactly one decision. Fix by adding a decision for the listed images, for \
+             example {{\"imageIds\": [\"image-2\"], \"treatment\": \"present\", \"rationale\": \
+             \"Network map illustrates the scale claim.\"}}",
+            seen.len(),
+            localized.len(),
+            uncovered.into_iter().copied().collect::<Vec<_>>().join(", "),
+        )));
+    }
+    Ok(counts)
+}
+
 fn word_count(text: &str) -> usize {
     text.split_whitespace().count()
 }
@@ -901,6 +1168,207 @@ fn validate_analysis_text(
         ));
     }
     Ok(())
+}
+
+/// Bounds on authored visuals. These bound the drawable area, not the article
+/// content: findings, segments, and durations stay uncapped.
+const VISUAL_MIN_DIAGRAM_NODES: usize = 2;
+const VISUAL_MAX_DIAGRAM_NODES: usize = 12;
+const VISUAL_MAX_DIAGRAM_EDGES: usize = 24;
+const VISUAL_MIN_POINTS: usize = 2;
+const VISUAL_MAX_POINTS: usize = 6;
+const VISUAL_MAX_LABEL_CHARS: usize = 200;
+
+fn validate_visual_spec(
+    index: usize,
+    presentation_type: &PresentationType,
+    visual: &Option<VisualSpec>,
+) -> Result<(), DigestError> {
+    let segment = index + 1;
+    match (presentation_type, visual) {
+        (PresentationType::Diagram, Some(VisualSpec::Diagram { nodes, edges })) => {
+            if nodes.len() < VISUAL_MIN_DIAGRAM_NODES
+                || nodes.len() > VISUAL_MAX_DIAGRAM_NODES
+            {
+                return Err(DigestError::InvalidInput(format!(
+                    "write_narration_plan: narration segment {segment} is a `diagram` with {} \
+                     node(s); a drawable diagram needs {VISUAL_MIN_DIAGRAM_NODES} to \
+                     {VISUAL_MAX_DIAGRAM_NODES} nodes. Fix by authoring within bounds, for \
+                     example {{\"type\": \"diagram\", \"nodes\": [{{\"id\": \"wal\", \"label\": \
+                     \"Write-ahead log\"}}, {{\"id\": \"replica\", \"label\": \"Replica\"}}], \
+                     \"edges\": [{{\"from\": \"wal\", \"to\": \"replica\", \"label\": \
+                     \"replicates\"}}]}}.",
+                    nodes.len()
+                )));
+            }
+            let mut seen = std::collections::HashSet::new();
+            for node in nodes {
+                if !seen.insert(node.id.as_str()) {
+                    return Err(DigestError::InvalidInput(format!(
+                        "write_narration_plan: narration segment {segment} repeats diagram node \
+                         id `{}`; every node id must be unique within the diagram. Fix by \
+                         renaming one of them.",
+                        node.id
+                    )));
+                }
+                if node.label.trim().is_empty() || node.label.chars().count() > VISUAL_MAX_LABEL_CHARS {
+                    return Err(DigestError::InvalidInput(format!(
+                        "write_narration_plan: narration segment {segment} diagram node `{}` has \
+                         an unusable label; labels must be non-empty and at most \
+                         {VISUAL_MAX_LABEL_CHARS} characters. A node is a label, not a \
+                         paragraph; the explanation lives in `displayText`.",
+                        node.id
+                    )));
+                }
+            }
+            if edges.is_empty() || edges.len() > VISUAL_MAX_DIAGRAM_EDGES {
+                return Err(DigestError::InvalidInput(format!(
+                    "write_narration_plan: narration segment {segment} is a `diagram` with {} \
+                     edge(s); a diagram needs 1 to {VISUAL_MAX_DIAGRAM_EDGES} edges. A diagram \
+                     with no edges is a list; use `concept-card` with a `points` visual instead.",
+                    edges.len()
+                )));
+            }
+            for edge in edges {
+                if !seen.contains(edge.from.as_str()) || !seen.contains(edge.to.as_str()) {
+                    return Err(DigestError::InvalidInput(format!(
+                        "write_narration_plan: narration segment {segment} diagram edge \
+                         `{} -> {}` references an undefined node; every edge endpoint must be \
+                         a node id defined in this same visual. Fix by adding the node or by \
+                         correcting the endpoint.",
+                        edge.from, edge.to
+                    )));
+                }
+                if edge.from == edge.to {
+                    return Err(DigestError::InvalidInput(format!(
+                        "write_narration_plan: narration segment {segment} diagram edge loops \
+                         from `{}` to itself; the player cannot draw self-loops. Fix by \
+                         introducing the intermediate step as its own node.",
+                        edge.from
+                    )));
+                }
+                if edge.label.chars().count() > VISUAL_MAX_LABEL_CHARS {
+                    return Err(DigestError::InvalidInput(format!(
+                        "write_narration_plan: narration segment {segment} diagram edge \
+                         `{} -> {}` carries a label longer than {VISUAL_MAX_LABEL_CHARS} \
+                         characters. Edge labels annotate; the explanation lives in \
+                         `displayText`.",
+                        edge.from, edge.to
+                    )));
+                }
+            }
+        }
+        (PresentationType::Diagram, _) => {
+            return Err(DigestError::InvalidInput(format!(
+                "write_narration_plan: narration segment {segment} sets `presentationType` to \
+                 `diagram` but carries no `diagram` visual. The player draws exactly the \
+                 authored spec and infers nothing. Fix by adding one, for example \
+                 {{\"visual\": {{\"type\": \"diagram\", \"nodes\": [{{\"id\": \"wal\", \"label\": \
+                 \"Write-ahead log\"}}, {{\"id\": \"replica\", \"label\": \"Replica\"}}], \
+                 \"edges\": [{{\"from\": \"wal\", \"to\": \"replica\"}}]}}}}."
+            )));
+        }
+        (PresentationType::ConceptCard, Some(VisualSpec::Points { items })) => {
+            if items.len() < VISUAL_MIN_POINTS || items.len() > VISUAL_MAX_POINTS {
+                return Err(DigestError::InvalidInput(format!(
+                    "write_narration_plan: narration segment {segment} is a `concept-card` \
+                     with {} bullet(s); a card needs {VISUAL_MIN_POINTS} to {VISUAL_MAX_POINTS} \
+                     bullets. One bullet is a callout; past six the card becomes a wall of \
+                     text. Fix by authoring within bounds.",
+                    items.len()
+                )));
+            }
+            if items
+                .iter()
+                .any(|item| item.trim().is_empty() || item.chars().count() > VISUAL_MAX_LABEL_CHARS)
+            {
+                return Err(DigestError::InvalidInput(format!(
+                    "write_narration_plan: narration segment {segment} `concept-card` has an \
+                     unusable bullet; every bullet must be non-empty and at most \
+                     {VISUAL_MAX_LABEL_CHARS} characters."
+                )));
+            }
+        }
+        (PresentationType::ConceptCard, _) => {
+            return Err(DigestError::InvalidInput(format!(
+                "write_narration_plan: narration segment {segment} sets `presentationType` to \
+                 `concept-card` but carries no `points` visual. Fix by adding one, for example \
+                 {{\"visual\": {{\"type\": \"points\", \"items\": [\"WAL is the source of \
+                 truth\", \"Replicas catch up from S3\"]}}}}."
+            )));
+        }
+        (_, Some(_)) => {
+            return Err(DigestError::InvalidInput(format!(
+                "write_narration_plan: narration segment {segment} carries a `visual` spec but \
+                 its `presentationType` is not `diagram` or `concept-card`. Only those two \
+                 types take authored visuals; every other type is drawn from `displayText` \
+                 alone. Fix by removing `visual` or by changing the presentation type."
+            )));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Check an image segment's image reference and project the persisted image
+/// object the player draws from: the content-addressed artifact id for bytes,
+/// the MIME type for the blob, and the text the player reads aloud as
+/// fallback. Returns `None` for segments that show no image.
+fn validate_segment_image(
+    index: usize,
+    presentation_type: &PresentationType,
+    image_id: Option<&str>,
+    localized: &std::collections::HashMap<&str, &serde_json::Value>,
+) -> Result<Option<serde_json::Value>, DigestError> {
+    let segment = index + 1;
+    match (presentation_type, image_id) {
+        (PresentationType::Image, Some(image_id)) => {
+            let Some(image) = localized.get(image_id) else {
+                let mut known: Vec<&str> = localized.keys().copied().collect();
+                known.sort();
+                return Err(DigestError::InvalidInput(format!(
+                    "write_narration_plan: narration segment {segment} shows unknown image \
+                     \"{image_id}\". Only images the ingestion localized carry bytes to show. \
+                     This article localized {}: {}. Image ids come from the article artifact's \
+                     `images[].id`; decorative images never surface and cannot be shown.",
+                    localized.len(),
+                    if known.is_empty() {
+                        "(none)".to_owned()
+                    } else {
+                        known.join(", ")
+                    }
+                )));
+            };
+            let field = |name: &str| {
+                image
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            };
+            Ok(Some(serde_json::json!({
+                "imageId": image_id,
+                "artifactId": field("artifactId"),
+                "mimeType": field("mimeType"),
+                "alt": image.get("alt"),
+                "caption": image.get("caption"),
+                "width": image.get("width"),
+                "height": image.get("height"),
+            })))
+        }
+        (PresentationType::Image, None) => Err(DigestError::InvalidInput(format!(
+            "write_narration_plan: narration segment {segment} sets `presentationType` to \
+             `image` but names no image. The player shows exactly the referenced bytes and \
+             infers nothing. Fix by adding `imageId`, for example `\"imageId\": \"image-2\"` \
+             naming a localized image from the article artifact's `images[].id`."
+        ))),
+        (_, Some(image_id)) => Err(DigestError::InvalidInput(format!(
+            "write_narration_plan: narration segment {segment} names image \"{image_id}\" but \
+             its `presentationType` is not `image`. Only `image` segments show figures; every \
+             other type is drawn from `displayText` and its visual alone. Fix by removing \
+             `imageId` or by changing the presentation type to `image`."
+        ))),
+        _ => Ok(None),
+    }
 }
 
 fn validate_tts_normalization(
@@ -1081,6 +1549,116 @@ mod tests {
             vocabulary_names(&SourceCoverageTreatment::ALL),
             "teach, summarize, skip"
         );
+    }
+
+    fn localized_image(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "captureStatus": "localized",
+            "artifactId": format!("artifact-{id}"),
+            "mimeType": "image/png",
+            "alt": format!("Figure {id}"),
+            "caption": serde_json::Value::Null,
+        })
+    }
+
+    fn image_catalog() -> std::collections::HashMap<&'static str, serde_json::Value> {
+        ["image-1", "image-2"]
+            .into_iter()
+            .map(|id| (id, localized_image(id)))
+            .collect()
+    }
+
+    fn image_decision(ids: &[&str], treatment: ImageCoverageTreatment) -> ImageCoverageDecision {
+        ImageCoverageDecision {
+            image_ids: ids.iter().map(ToString::to_string).collect(),
+            treatment,
+            rationale: "Figure illustrates the claim.".into(),
+        }
+    }
+
+    #[test]
+    fn image_coverage_requires_every_localized_image_accounted() {
+        let catalog = image_catalog();
+        let localized: std::collections::HashMap<&str, &serde_json::Value> = catalog
+            .iter()
+            .map(|(id, image)| (*id, image))
+            .collect();
+        let referenced: HashSet<String> = ["image-1".to_string()].into_iter().collect();
+        let counts = validate_image_coverage(
+            &[
+                image_decision(&["image-1"], ImageCoverageTreatment::Present),
+                image_decision(&["image-2"], ImageCoverageTreatment::Skip),
+            ],
+            &localized,
+            &referenced,
+        )
+        .expect("full accounting passes");
+        assert_eq!(counts.accounted, 2);
+        assert_eq!(counts.presented, 1);
+        assert_eq!(counts.skipped, 1);
+
+        let error = validate_image_coverage(
+            &[image_decision(&["image-1"], ImageCoverageTreatment::Present)],
+            &localized,
+            &referenced,
+        )
+        .expect_err("unaccounted image must fail");
+        assert!(error.to_string().contains("image-2"), "{error}");
+
+        let error = validate_image_coverage(
+            &[
+                image_decision(&["image-1"], ImageCoverageTreatment::Skip),
+                image_decision(&["image-2"], ImageCoverageTreatment::Skip),
+            ],
+            &localized,
+            &referenced,
+        )
+        .expect_err("presented image marked skip must fail");
+        assert!(error.to_string().contains("marked `skip`"), "{error}");
+    }
+
+    #[test]
+    fn image_segments_must_name_a_localized_image() {
+        let catalog = image_catalog();
+        let localized: std::collections::HashMap<&str, &serde_json::Value> = catalog
+            .iter()
+            .map(|(id, image)| (*id, image))
+            .collect();
+
+        let image = validate_segment_image(
+            0,
+            &PresentationType::Image,
+            Some("image-1"),
+            &localized,
+        )
+        .expect("localized image passes");
+        let image = image.expect("image segment projects an image object");
+        assert_eq!(image["imageId"], "image-1");
+        assert_eq!(image["artifactId"], "artifact-image-1");
+        assert_eq!(image["mimeType"], "image/png");
+
+        let error = validate_segment_image(0, &PresentationType::Image, None, &localized)
+            .expect_err("image segment without imageId must fail");
+        assert!(error.to_string().contains("names no image"), "{error}");
+
+        let error = validate_segment_image(
+            0,
+            &PresentationType::Image,
+            Some("image-9"),
+            &localized,
+        )
+        .expect_err("unknown image must fail");
+        assert!(error.to_string().contains("image-9"), "{error}");
+
+        let error = validate_segment_image(
+            0,
+            &PresentationType::ArticleText,
+            Some("image-1"),
+            &localized,
+        )
+        .expect_err("imageId on article text must fail");
+        assert!(error.to_string().contains("not `image`"), "{error}");
     }
 
     #[test]

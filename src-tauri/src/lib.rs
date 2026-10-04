@@ -27,11 +27,11 @@ pub use ingestion::{
 };
 pub use mcp::DigestMcpServer;
 pub use tools::{
-    AnalysisClaim, AnalysisFinding, AnalysisFindingKind, DigestTools, IngestArticleInput,
-    IngestArticleOutput, NarrationImportance, NarrationIntent, NarrationSegmentDraft,
-    PresentationType, ProvenanceKind, ReadArtifactInput, ReadArtifactOutput,
-    SourceCoverageDecision, SourceCoverageTreatment, WriteAnalysisInput, WriteAnalysisOutput,
-    WriteNarrationPlanInput,
+    AnalysisClaim, AnalysisFinding, AnalysisFindingKind, DiagramEdge, DiagramNode, DigestTools,
+    ImageCoverageDecision, ImageCoverageTreatment, IngestArticleInput, IngestArticleOutput,
+    NarrationImportance, NarrationIntent, NarrationSegmentDraft, PresentationType, ProvenanceKind,
+    ReadArtifactInput, ReadArtifactOutput, SourceCoverageDecision, SourceCoverageTreatment,
+    VisualSpec, WriteAnalysisInput, WriteAnalysisOutput, WriteNarrationPlanInput,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

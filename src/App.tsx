@@ -87,8 +87,31 @@ type PlaybackSegment = {
   audioArtifactId?: string;
   displayText: string;
   sourceBlocks: string[];
-  presentation: { type?: string };
+  presentation: { type?: string; visual?: VisualSpec | null };
+  /** Projected figure for `image` segments (manifest schema 1.4+). */
+  image?: SegmentFigure | null;
 };
+type SegmentFigure = {
+  imageId: string;
+  artifactId: string;
+  mimeType: string;
+  alt: string | null;
+  caption: string | null;
+  width: number | null;
+  height: number | null;
+};
+/**
+ * Authored visual content (narration schema 1.4+, manifest schema 1.3+).
+ * The renderer draws exactly this; nothing is inferred. Segments from older
+ * plans carry no visual and fall back to the narration text.
+ */
+type VisualSpec =
+  | {
+      type: "diagram";
+      nodes: { id: string; label: string }[];
+      edges: { from: string; to: string; label?: string }[];
+    }
+  | { type: "points"; items: string[] };
 type PlaybackClip = PlaybackPart & { segmentIndex: number };
 type PlaybackManifest = {
   schemaVersion?: string;
@@ -421,6 +444,282 @@ function ActivityMessage({ event }: { event: AgentEvent }) {
       {raw && <pre className="event-raw">{event.message}</pre>}
     </>
   );
+}
+
+const VISUAL_NODE_WIDTH = 150;
+const VISUAL_NODE_HEIGHT = 56;
+const VISUAL_COLUMN_GAP = 64;
+const VISUAL_ROW_GAP = 28;
+const VISUAL_PAD = 16;
+const VISUAL_LABEL_CHARS = 20;
+const VISUAL_LABEL_LINES = 3;
+
+function wrapVisualLabel(label: string): string[] {
+  const words = label.split(/\s+/).filter((word) => word !== "");
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    const next = line === "" ? word : `${line} ${word}`;
+    if (next.length > VISUAL_LABEL_CHARS && line !== "") {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+    if (lines.length === VISUAL_LABEL_LINES - 1 && line.length > VISUAL_LABEL_CHARS) {
+      lines.push(`${line.slice(0, VISUAL_LABEL_CHARS - 1)}…`);
+      return lines;
+    }
+  }
+  if (line !== "") lines.push(line);
+  return lines.slice(0, VISUAL_LABEL_LINES);
+}
+
+function layoutDiagram(spec: Extract<VisualSpec, { type: "diagram" }>) {
+  const ids = spec.nodes.map((node) => node.id);
+  const depth = new Map<string, number>(ids.map((id) => [id, 0]));
+  for (let pass = 0; pass < ids.length; pass++) {
+    for (const edge of spec.edges) {
+      if (!depth.has(edge.from) || !depth.has(edge.to)) continue;
+      const next = (depth.get(edge.from) ?? 0) + 1;
+      if (next > (depth.get(edge.to) ?? 0)) depth.set(edge.to, next);
+    }
+  }
+  const columns = new Map<number, string[]>();
+  for (const id of ids) {
+    const level = depth.get(id) ?? 0;
+    const column = columns.get(level) ?? [];
+    column.push(id);
+    columns.set(level, column);
+  }
+  const levels = [...columns.keys()].sort((a, b) => a - b);
+  const positions = new Map<string, { x: number; y: number }>();
+  const rows = Math.max(...[...columns.values()].map((column) => column.length));
+  levels.forEach((level, columnIndex) => {
+    const column = columns.get(level) ?? [];
+    column.forEach((id, rowIndex) => {
+      positions.set(id, {
+        x:
+          VISUAL_PAD +
+          columnIndex * (VISUAL_NODE_WIDTH + VISUAL_COLUMN_GAP),
+        y:
+          VISUAL_PAD +
+          rowIndex * (VISUAL_NODE_HEIGHT + VISUAL_ROW_GAP),
+      });
+    });
+  });
+  const width =
+    VISUAL_PAD * 2 +
+    levels.length * VISUAL_NODE_WIDTH +
+    Math.max(0, levels.length - 1) * VISUAL_COLUMN_GAP;
+  const height =
+    VISUAL_PAD * 2 +
+    rows * VISUAL_NODE_HEIGHT +
+    Math.max(0, rows - 1) * VISUAL_ROW_GAP;
+  return { positions, width, height };
+}
+
+function DiagramFigure({
+  spec,
+  segmentId,
+}: {
+  spec: Extract<VisualSpec, { type: "diagram" }>;
+  segmentId: string;
+}) {
+  const nodes = Array.isArray(spec.nodes) ? spec.nodes : [];
+  const edges = Array.isArray(spec.edges) ? spec.edges : [];
+  if (nodes.length === 0) return null;
+  const { positions, width, height } = layoutDiagram({ ...spec, nodes, edges });
+  const summary = nodes
+    .map((node) => {
+      const outgoing = edges
+        .filter((edge) => edge.from === node.id)
+        .map((edge) => edge.to)
+        .join(", ");
+      return outgoing === "" ? node.label : `${node.label} to ${outgoing}`;
+    })
+    .join("; ");
+  return (
+    <figure
+      className="visual-diagram"
+      role="img"
+      aria-label={`Diagram for ${segmentId}: ${summary}`}
+    >
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width={width}
+        height={height}
+        aria-hidden="true"
+      >
+        <defs>
+          <marker
+            id={`arrow-${segmentId}`}
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 1 L 9 5 L 0 9 z" className="visual-edge-head" />
+          </marker>
+        </defs>
+        {edges.map((edge, index) => {
+          const from = positions.get(edge.from);
+          const to = positions.get(edge.to);
+          if (!from || !to) return null;
+          const x1 = from.x + VISUAL_NODE_WIDTH;
+          const y1 = from.y + VISUAL_NODE_HEIGHT / 2;
+          const x2 = to.x;
+          const y2 = to.y + VISUAL_NODE_HEIGHT / 2;
+          const midX = (x1 + x2) / 2;
+          return (
+            <g key={`${edge.from}-${edge.to}-${index}`}>
+              <path
+                d={`M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`}
+                className="visual-edge"
+                markerEnd={`url(#arrow-${segmentId})`}
+              />
+              {edge.label !== undefined && edge.label !== "" && (
+                <text x={midX} y={Math.min(y1, y2) - 4} className="visual-edge-label">
+                  {edge.label.length > 24
+                    ? `${edge.label.slice(0, 23)}…`
+                    : edge.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {nodes.map((node) => {
+          const position = positions.get(node.id);
+          if (!position) return null;
+          const lines = wrapVisualLabel(node.label);
+          return (
+            <g key={node.id}>
+              <rect
+                x={position.x}
+                y={position.y}
+                width={VISUAL_NODE_WIDTH}
+                height={VISUAL_NODE_HEIGHT}
+                rx={8}
+                className="visual-node"
+              />
+              <text
+                x={position.x + VISUAL_NODE_WIDTH / 2}
+                y={
+                  position.y +
+                  VISUAL_NODE_HEIGHT / 2 -
+                  ((lines.length - 1) * 7) +
+                  4
+                }
+                className="visual-node-label"
+              >
+                {lines.map((line, lineIndex) => (
+                  <tspan
+                    key={lineIndex}
+                    x={position.x + VISUAL_NODE_WIDTH / 2}
+                    dy={lineIndex === 0 ? 0 : 14}
+                  >
+                    {line}
+                  </tspan>
+                ))}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </figure>
+  );
+}
+
+const figureUrls = new Map<string, string>();
+
+function FigurePanel({ figure }: { figure: SegmentFigure }) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(
+    () => figureUrls.get(figure.artifactId) ?? null,
+  );
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (figureUrls.has(figure.artifactId)) {
+      setObjectUrl(figureUrls.get(figure.artifactId) ?? null);
+      setFailed(false);
+      return;
+    }
+    let disposed = false;
+    setObjectUrl(null);
+    setFailed(false);
+    invoke<ArrayBuffer>("audio_asset", { artifactId: figure.artifactId })
+      .then((bytes) => {
+        if (disposed) return;
+        const url = URL.createObjectURL(
+          new Blob([bytes], { type: figure.mimeType }),
+        );
+        figureUrls.set(figure.artifactId, url);
+        setObjectUrl(url);
+      })
+      .catch(() => {
+        if (!disposed) setFailed(true);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [figure.artifactId, figure.mimeType]);
+
+  const caption = figure.caption ?? figure.alt ?? `Figure ${figure.imageId}`;
+  if (failed || figure.artifactId === "") {
+    return (
+      <figure className="visual-figure visual-figure-missing" aria-label={caption}>
+        <span>{caption}</span>
+      </figure>
+    );
+  }
+  if (objectUrl === null) return null;
+  return (
+    <figure className="visual-figure">
+      <img
+        src={objectUrl}
+        alt={caption}
+        style={
+          figure.width !== null &&
+          figure.height !== null &&
+          figure.width > 0 &&
+          figure.height > 0
+            ? { aspectRatio: `${figure.width} / ${figure.height}` }
+            : undefined
+        }
+      />
+      <figcaption>{caption}</figcaption>
+    </figure>
+  );
+}
+
+function VisualPanel({ segment }: { segment: PlaybackSegment }) {
+  if (
+    segment.presentation.type === "image" &&
+    segment.image !== undefined &&
+    segment.image !== null
+  ) {
+    return <FigurePanel figure={segment.image} />;
+  }
+  const visual = segment.presentation.visual ?? null;
+  if (visual !== null && visual.type === "diagram") {
+    return <DiagramFigure spec={visual} segmentId={segment.id} />;
+  }
+  if (visual !== null && visual.type === "points") {
+    const items = Array.isArray(visual.items) ? visual.items : [];
+    if (items.length === 0) return null;
+    return (
+      <figure className="visual-points" aria-label={`Key points for ${segment.id}`}>
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${segment.id}-point-${index}`}>{item}</li>
+          ))}
+        </ul>
+      </figure>
+    );
+  }
+  return null;
 }
 
 function LessonPlayer({
@@ -939,6 +1238,7 @@ function LessonPlayer({
             {busySegmentId === segment.id ? "Regenerating…" : "Regenerate segment"}
           </button>
         </div>
+        <VisualPanel segment={segment} />
         <p>{segment.displayText}</p>
         <div className="active-segment-blocks">
           <span>Source blocks</span>
