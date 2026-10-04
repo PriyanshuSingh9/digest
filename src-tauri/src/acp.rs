@@ -2,7 +2,9 @@ use crate::{AttemptStatus, DigestService, NewAgentEvent, NewAgentEventKind, Star
 use agent_client_protocol::schema::v1::{
     ContentBlock, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
+    SelectedPermissionOutcome, SessionConfigId, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigSelectOptions, SessionConfigValueId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
     ToolCallStatus,
 };
 use agent_client_protocol::schema::ProtocolVersion;
@@ -114,6 +116,121 @@ pub struct AgentRunRequest {
     pub prompt: String,
     pub digest_mcp: McpLaunchSpec,
     pub permission_policy: PermissionPolicy,
+    /// Optional harness model, e.g. `opencode/muse-spark-1.3-contributor-free`.
+    /// Applied through `session/set_config_option` after `session/new` when the
+    /// harness advertises a model selector. `None` keeps the harness default.
+    pub model: Option<String>,
+}
+
+/// One selectable harness model, as advertised by the agent itself through its
+/// `session/new` config options. The `id` is the wire value; `name` is display
+/// text. No Digest-side catalog is kept, so this list can never go stale.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModel {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Whether this is the harness's current default for a fresh session.
+    pub current: bool,
+}
+
+/// The model selectors among a harness's advertised session config options.
+fn model_select_options(options: &[SessionConfigOption]) -> Vec<&SessionConfigOption> {
+    options
+        .iter()
+        .filter(|option| {
+            option.category == Some(SessionConfigOptionCategory::Model)
+                && matches!(option.kind, SessionConfigKind::Select(_))
+        })
+        .collect()
+}
+
+fn flat_select_options(
+    option: &SessionConfigOption,
+) -> Vec<(String, String, Option<String>, bool)> {
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return Vec::new();
+    };
+    let listed = match &select.options {
+        SessionConfigSelectOptions::Ungrouped(options) => options.clone(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.clone())
+            .collect(),
+        _ => Vec::new(),
+    };
+    listed
+        .into_iter()
+        .map(|entry| {
+            let current = entry.value.to_string() == select.current_value.to_string();
+            (
+                entry.value.to_string(),
+                entry.name,
+                entry.description,
+                current,
+            )
+        })
+        .collect()
+}
+
+/// Project advertised config options down to the display list the UI shows.
+fn agent_models(options: &[SessionConfigOption]) -> Vec<AgentModel> {
+    model_select_options(options)
+        .into_iter()
+        .flat_map(flat_select_options)
+        .map(|(id, name, description, current)| AgentModel {
+            id,
+            name,
+            description,
+            current,
+        })
+        .collect()
+}
+
+/// Resolve a requested model against what the harness advertised. Returns the
+/// config option to set and the value to set it to. The error names every value
+/// the harness accepts, so the caller can correct the request instead of
+/// guessing.
+fn resolve_model_option(
+    options: &[SessionConfigOption],
+    requested: &str,
+) -> Result<(SessionConfigId, SessionConfigValueId), String> {
+    let selectors = model_select_options(options);
+    if selectors.is_empty() {
+        let advertised: Vec<String> = options
+            .iter()
+            .map(|option| option.id.to_string())
+            .collect();
+        return Err(format!(
+            "harness does not advertise a model selector (advertised options: {}); \
+             run without a model to use the harness default",
+            if advertised.is_empty() {
+                "none".into()
+            } else {
+                advertised.join(", ")
+            }
+        ));
+    }
+    for selector in &selectors {
+        for (value, _, _, _) in flat_select_options(selector) {
+            if value == requested {
+                return Ok((
+                    selector.id.clone(),
+                    SessionConfigValueId::new(requested),
+                ));
+            }
+        }
+    }
+    let accepted: Vec<String> = selectors
+        .iter()
+        .flat_map(|selector| flat_select_options(selector))
+        .map(|(value, _, _, _)| value)
+        .collect();
+    Err(format!(
+        "harness does not offer model `{requested}`; accepted values: {}",
+        accepted.join(", ")
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -274,6 +391,60 @@ impl AcpClient {
             .await
     }
 
+    /// Ask a harness which models it offers, without starting a run. Spawns the
+    /// agent, runs `initialize` + `session/new`, and reads the model selectors
+    /// from the advertised config options. An empty list means the harness does
+    /// not offer model selection. The child process tree is torn down when the
+    /// connection closes.
+    pub async fn list_agent_models(
+        &self,
+        provider: &AgentProvider,
+        cwd: &std::path::Path,
+    ) -> Result<Vec<AgentModel>, AcpClientError> {
+        if !cwd.is_absolute() {
+            return Err(AcpClientError::InvalidConfiguration(
+                "ACP working directory must be absolute".into(),
+            ));
+        }
+        if let AgentProvider::Agy { adapter_command, .. } = provider {
+            if adapter_command.as_os_str().is_empty() {
+                return Err(AcpClientError::InvalidConfiguration(
+                    "agy adapter command is required".into(),
+                ));
+            }
+        }
+        let launch = provider.launch_spec();
+        let mut command = vec![launch.command.to_string_lossy().into_owned()];
+        command.extend(launch.args);
+        let agent = AcpAgent::from_args(command)
+            .map_err(|error| AcpClientError::Protocol(error.to_string()))?;
+        let probe = agent_client_protocol::Client
+            .builder()
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(agent_client_protocol::schema::v1::InitializeRequest::new(
+                        ProtocolVersion::V1,
+                    ))
+                    .block_task()
+                    .await?;
+                let new_session = connection
+                    .send_request(NewSessionRequest::new(cwd).mcp_servers(vec![]))
+                    .block_task()
+                    .await?;
+                Ok(agent_models(
+                    new_session.config_options.as_deref().unwrap_or(&[]),
+                ))
+            });
+        tokio::time::timeout(Duration::from_secs(60), probe)
+            .await
+            .map_err(|_| {
+                AcpClientError::Protocol(
+                    "harness did not answer the model probe within 60 seconds".into(),
+                )
+            })?
+            .map_err(|error| AcpClientError::Protocol(error.to_string()))
+    }
+
     pub async fn run_once_with_cancellation(
         &self,
         request: AgentRunRequest,
@@ -322,6 +493,7 @@ impl AcpClient {
         let prompt = request.prompt;
         let job_id = request.job_id;
         let permission_policy = request.permission_policy;
+        let requested_model = request.model;
         let lifecycle_service = Arc::clone(&self.service);
 
         let agent_run = agent_client_protocol::Client
@@ -380,6 +552,25 @@ impl AcpClient {
                     .await?;
                 lifecycle_activity.record();
                 let session_id = new_session.session_id;
+                let applied_model = if let Some(model) = requested_model {
+                    let advertised = new_session.config_options.as_deref().unwrap_or(&[]);
+                    let (config_id, value) = resolve_model_option(advertised, &model).map_err(
+                        |message| {
+                            agent_client_protocol::Error::internal_error().data(message)
+                        },
+                    )?;
+                    connection
+                        .send_request(SetSessionConfigOptionRequest::new(
+                            session_id.clone(),
+                            config_id,
+                            value,
+                        ))
+                        .block_task()
+                        .await?;
+                    Some(model)
+                } else {
+                    None
+                };
                 *lifecycle_session
                     .lock()
                     .expect("active session lock poisoned") = Some(session_id.to_string());
@@ -388,7 +579,10 @@ impl AcpClient {
                         job_id: job_id.clone(),
                         session_id: session_id.to_string(),
                         kind: NewAgentEventKind::SessionStarted,
-                        message: "ACP session started".into(),
+                        message: match &applied_model {
+                            Some(model) => format!("ACP session started with model {model}"),
+                            None => "ACP session started".into(),
+                        },
                     })
                     .map_err(|error| {
                         agent_client_protocol::Error::internal_error().data(error.to_string())
@@ -653,6 +847,13 @@ fn validate_request(request: &AgentRunRequest) -> Result<(), AcpClientError> {
                 "agy adapter command is required".into(),
             ));
         }
+        if request.model.as_ref().is_some_and(|model| !model.trim().is_empty()) {
+            return Err(AcpClientError::InvalidConfiguration(
+                "model selection is only supported for the OpenCode provider; \
+                 the agy adapter owns its own model through its adapter arguments"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -710,7 +911,80 @@ fn stop_reason_name(reason: StopReason) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::SessionConfigSelectOption;
     use std::future::pending;
+
+    fn model_selector() -> SessionConfigOption {
+        SessionConfigOption::select(
+            "model",
+            "Model",
+            "opencode/big-pickle",
+            vec![
+                SessionConfigSelectOption::new("opencode/big-pickle", "Big Pickle"),
+                SessionConfigSelectOption::new("opencode/space-bunny-free", "Space Bunny"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Model)
+    }
+
+    #[test]
+    fn requested_model_resolves_against_advertised_values() {
+        let (config_id, value) =
+            resolve_model_option(&[model_selector()], "opencode/space-bunny-free")
+                .expect("advertised model must resolve");
+        assert_eq!(config_id.to_string(), "model");
+        assert_eq!(value.to_string(), "opencode/space-bunny-free");
+    }
+
+    #[test]
+    fn unknown_model_names_every_accepted_value() {
+        let error = resolve_model_option(&[model_selector()], "opencode/nope")
+            .expect_err("unadvertised model must fail");
+        assert!(error.contains("opencode/big-pickle"), "{error}");
+        assert!(error.contains("opencode/space-bunny-free"), "{error}");
+    }
+
+    #[test]
+    fn harness_without_model_selector_is_a_clear_error() {
+        let error = resolve_model_option(&[], "opencode/big-pickle")
+            .expect_err("missing selector must fail");
+        assert!(error.contains("does not advertise"), "{error}");
+        assert!(error.contains("harness default"), "{error}");
+    }
+
+    #[test]
+    fn non_model_selectors_are_ignored() {
+        let mode = SessionConfigOption::select(
+            "mode",
+            "Session Mode",
+            "build",
+            vec![SessionConfigSelectOption::new("build", "build")],
+        )
+        .category(SessionConfigOptionCategory::Mode);
+        let models = agent_models(&[mode, model_selector()]);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "opencode/big-pickle");
+        assert_eq!(models[0].name, "Big Pickle");
+    }
+
+    #[test]
+    fn agy_with_model_is_rejected_before_any_subprocess_starts() {
+        let request = AgentRunRequest {
+            job_id: "job-1".into(),
+            provider: AgentProvider::Agy {
+                adapter_command: "/bin/agy".into(),
+                adapter_args: Vec::new(),
+            },
+            cwd: "/tmp".into(),
+            prompt: "prompt".into(),
+            digest_mcp: McpLaunchSpec::new("/bin/digest".into(), "/tmp/data".into())
+                .expect("absolute fixture paths"),
+            permission_policy: PermissionPolicy::Deny,
+            model: Some("opencode/big-pickle".into()),
+        };
+        let error = validate_request(&request).expect_err("agy plus model must fail");
+        assert!(error.to_string().contains("OpenCode"), "{error}");
+    }
 
     #[test]
     fn invalid_or_failed_tool_updates_are_failures_even_when_acp_says_completed() {

@@ -32,9 +32,18 @@ pub struct StartAgentRun {
     pub article_url: String,
     pub prompt: String,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub allow_once_permissions: bool,
     #[serde(default)]
     pub refresh_source: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAgentModels {
+    pub provider: AgentProvider,
+    pub cwd: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,11 +59,19 @@ pub struct RunSnapshot {
 pub struct HostInfo {
     pub data_dir: PathBuf,
     pub mcp_executable: PathBuf,
+    pub agent_workspace_dir: PathBuf,
     pub agent_inactivity_timeout_seconds: u64,
     pub agent_max_runtime_seconds: Option<u64>,
     pub kokoro_endpoint: String,
     pub audio_provider: String,
     pub audio_default_voice: String,
+}
+
+/// The default ACP working directory offered to the operator. It lives under
+/// the data directory so it is absolute and writable, and it stays outside the
+/// source tree so an agent run cannot touch the repository.
+pub fn agent_workspace_dir(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("workspaces").join("default")
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +135,7 @@ pub fn host_info(state: State<'_, HostState>) -> HostInfo {
     HostInfo {
         data_dir: state.data_dir.clone(),
         mcp_executable: state.executable.clone(),
+        agent_workspace_dir: agent_workspace_dir(&state.data_dir),
         agent_inactivity_timeout_seconds: state.supervision.inactivity_timeout.as_secs(),
         agent_max_runtime_seconds: state
             .supervision
@@ -315,6 +333,10 @@ pub async fn start_agent_run(
                 job_id: input.job_id,
                 provider: input.provider,
                 cwd: input.cwd,
+                model: input
+                    .model
+                    .map(|model| model.trim().to_owned())
+                    .filter(|model| !model.is_empty()),
                 digest_mcp,
                 permission_policy: if input.allow_once_permissions {
                     PermissionPolicy::AllowOnce
@@ -324,6 +346,17 @@ pub async fn start_agent_run(
             },
             cancellation,
         )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_agent_models(
+    state: State<'_, HostState>,
+    input: ListAgentModels,
+) -> Result<Vec<crate::AgentModel>, String> {
+    AcpClient::new(Arc::clone(&state.service))
+        .list_agent_models(&input.provider, &input.cwd)
         .await
         .map_err(|error| error.to_string())
 }
@@ -344,6 +377,7 @@ pub fn configure_host(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
     let supervision = supervision_from_environment()?;
     let service = Arc::new(DigestService::open(&data_dir)?);
     service.recover_abandoned_attempts()?;
+    std::fs::create_dir_all(agent_workspace_dir(&data_dir))?;
     app.manage(HostState {
         service,
         data_dir,

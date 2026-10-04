@@ -1,5 +1,6 @@
-use digest_lib::{AgentProvider, McpLaunchSpec};
+use digest_lib::{AcpClient, AgentProvider, DigestService, McpLaunchSpec};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[test]
 fn opencode_uses_its_native_acp_entrypoint_without_a_shell() {
@@ -48,4 +49,32 @@ fn digest_mcp_rejects_relative_executable_paths() {
     .expect_err("relative executable must be rejected");
 
     assert!(error.to_string().contains("absolute"));
+}
+
+/// Live harness validation. Spawns the real `opencode acp` binary and reads the
+/// models it advertises. Ignored by default; run it explicitly:
+///
+/// ```text
+/// cargo test --test acp_client -- --ignored
+/// ```
+#[tokio::test]
+#[ignore = "requires the opencode binary on PATH"]
+async fn opencode_advertises_selectable_models() {
+    let directory = tempfile::tempdir().expect("create temporary data directory");
+    let service = Arc::new(DigestService::open(directory.path()).expect("open Digest service"));
+    let models = AcpClient::new(service)
+        .list_agent_models(&AgentProvider::OpenCode, directory.path())
+        .await
+        .expect("list models from live opencode");
+
+    assert!(!models.is_empty(), "opencode must advertise at least one model");
+    assert!(
+        models.iter().all(|model| model.id.contains('/')),
+        "model ids carry their provider: {}",
+        serde_json::to_string(&models).expect("serialize models"),
+    );
+    assert!(
+        models.iter().any(|model| model.current),
+        "one advertised model is the harness default",
+    );
 }

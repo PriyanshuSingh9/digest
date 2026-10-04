@@ -13,6 +13,12 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 type Provider = "open_code" | "agy";
+type AgentModel = {
+  id: string;
+  name: string;
+  description: string | null;
+  current: boolean;
+};
 type AgentEvent = {
   sequence: number;
   jobId: string;
@@ -48,6 +54,7 @@ type RunSnapshot = {
 type HostInfo = {
   dataDir: string;
   mcpExecutable: string;
+  agentWorkspaceDir: string;
   agentInactivityTimeoutSeconds: number;
   agentMaxRuntimeSeconds: number | null;
   kokoroEndpoint: string;
@@ -1020,6 +1027,12 @@ function App() {
   const [articleUrl, setArticleUrl] = useState("");
   const [provider, setProvider] = useState<Provider>("open_code");
   const [adapterCommand, setAdapterCommand] = useState("");
+  const [model, setModel] = useState("");
+  const [availableModels, setAvailableModels] = useState<AgentModel[] | null>(
+    null,
+  );
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState(
     "Read the normalized article artifact. Identify its central argument and most important learning points with source-block provenance, then use Digest write_analysis exactly once.",
   );
@@ -1197,10 +1210,49 @@ function App() {
     }
   }, []);
 
+  const refreshModels = useCallback(async () => {
+    if (provider === "agy" && adapterCommand.trim() === "") {
+      setAvailableModels(null);
+      setModelsError("Enter the adapter executable before listing models.");
+      return;
+    }
+    if (cwd.trim() === "") {
+      setAvailableModels(null);
+      setModelsError("Set a working directory before listing models.");
+      return;
+    }
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const models = await invoke<AgentModel[]>("list_agent_models", {
+        input: {
+          provider:
+            provider === "open_code"
+              ? { provider: "open_code" }
+              : { provider: "agy", adapterCommand, adapterArgs: [] },
+          cwd,
+        },
+      });
+      setAvailableModels(models);
+      setModel((current) =>
+        current === "" || models.some((entry) => entry.id === current)
+          ? current
+          : "",
+      );
+    } catch (reason) {
+      setAvailableModels(null);
+      setModelsError(String(reason));
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [provider, adapterCommand, cwd]);
+
   const loadHost = useCallback(async () => {
     setHostError(null);
     try {
-      setHost(await invoke<HostInfo>("host_info"));
+      const info = await invoke<HostInfo>("host_info");
+      setHost(info);
+      setCwd((current) => (current === "" ? info.agentWorkspaceDir : current));
       await refreshRecentRuns();
     } catch (reason) {
       setHost(null);
@@ -1258,6 +1310,16 @@ function App() {
   useEffect(() => {
     void loadHost();
   }, [loadHost]);
+
+  const lastModelProvider = useRef(provider);
+  const hadModelCwd = useRef(false);
+  useEffect(() => {
+    const providerChanged = lastModelProvider.current !== provider;
+    lastModelProvider.current = provider;
+    const cwdArrived = !hadModelCwd.current && cwd.trim() !== "";
+    hadModelCwd.current = cwd.trim() !== "";
+    if (providerChanged || cwdArrived) void refreshModels();
+  }, [provider, cwd, refreshModels]);
 
   useEffect(() => {
     if (!running || !activeJobId) return;
@@ -1327,6 +1389,7 @@ function App() {
             articleUrl,
             prompt,
             provider: providerInput,
+            model: model === "" ? null : model,
             allowOncePermissions,
             refreshSource,
           },
@@ -1646,6 +1709,42 @@ function App() {
                     />
                   </div>
                 )}
+                <div className="field">
+                  <label htmlFor="agent-model">Agent model</label>
+                  <div className="stage-action">
+                    <select
+                      id="agent-model"
+                      value={model}
+                      onChange={(event) => setModel(event.currentTarget.value)}
+                      disabled={modelsLoading || availableModels === null}
+                    >
+                      <option value="">
+                        Harness default
+                        {availableModels?.find((entry) => entry.current)
+                          ? ` (${availableModels.find((entry) => entry.current)?.name})`
+                          : ""}
+                      </option>
+                      {(availableModels ?? []).map((entry) => (
+                        <option key={entry.id} value={entry.id} title={entry.description ?? undefined}>
+                          {entry.name}
+                          {entry.current ? " (default)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => void refreshModels()}
+                      disabled={modelsLoading}
+                    >
+                      {modelsLoading ? "Loading…" : "Refresh"}
+                    </button>
+                  </div>
+                  <span className="field-help">
+                    {modelsError ??
+                      "Models come from the harness itself, so this list can never go stale. Leave it on the harness default to skip selection."}
+                  </span>
+                </div>
                 <div className="field">
                   <label htmlFor="article-url">Article URL</label>
                   <input

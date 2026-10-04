@@ -8,7 +8,7 @@ mod tool_input;
 mod tools;
 
 pub use acp::{
-    AcpClient, AcpClientError, AgentLaunchSpec, AgentProvider, AgentRunCancellation,
+    AcpClient, AcpClientError, AgentLaunchSpec, AgentModel, AgentProvider, AgentRunCancellation,
     AgentRunRequest, AgentRunResult, AgentRunSupervision, McpLaunchSpec, PermissionPolicy,
 };
 pub use application::{
@@ -45,6 +45,7 @@ pub fn run() {
             host::cancel_audio_generation,
             host::generate_audio,
             host::host_info,
+            host::list_agent_models,
             host::recent_runs,
             host::regenerate_segment_audio,
             host::run_snapshot,

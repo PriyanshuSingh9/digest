@@ -44,6 +44,7 @@ The authoritative list is the `tauri::generate_handler!` invocation in `src-taur
 | `run_snapshot` | `host::run_snapshot` | `jobId: string`, `afterEventSequence?: number` | `RunSnapshot` |
 | `recent_runs` | `host::recent_runs` | `limit?: number` (defaults to 20) | `RunSummary[]` |
 | `start_agent_run` | `host::start_agent_run` | `input: StartAgentRun` | `AgentRunResult` |
+| `list_agent_models` | `host::list_agent_models` | `input: { provider, cwd }` | `AgentModel[]` |
 | `cancel_agent_run` | `host::cancel_agent_run` | `jobId: string` | `void` |
 | `generate_audio` | `host::generate_audio` | `input: GenerateAudio`, `onProgress: Channel<AudioGenerationProgress>` | `GenerateAudioResult` |
 | `regenerate_segment_audio` | `host::regenerate_segment_audio` | `input: RegenerateSegmentAudio`, `onProgress: Channel<AudioGenerationProgress>` | `GenerateAudioResult` |
@@ -125,6 +126,7 @@ type RunSnapshot = {
 type HostInfo = {
   dataDir: string;
   mcpExecutable: string;
+  agentWorkspaceDir: string;               // <dataDir>/workspaces/default, created at startup
   agentInactivityTimeoutSeconds: number;
   agentMaxRuntimeSeconds: number | null;   // null when no limit is configured
   kokoroEndpoint: string;
@@ -132,6 +134,8 @@ type HostInfo = {
   audioDefaultVoice: string;
 };
 ```
+
+`agentWorkspaceDir` is the default ACP working directory the UI offers for a new run. The host guarantees the directory exists. It sits under the data directory so it is absolute and writable, and outside the source tree so an agent run cannot touch the repository.
 
 ---
 
@@ -302,12 +306,23 @@ type StartAgentRun = {
   cwd: string;
   articleUrl: string;
   prompt: string;
+  model: string | null;           // default null; null keeps the harness default
   allowOncePermissions: boolean;  // default false
   refreshSource: boolean;         // default false; false reuses the latest normalized article
+};
+
+// One selectable harness model, as advertised by the agent itself.
+type AgentModel = {
+  id: string;                     // the wire value, e.g. "opencode/muse-spark-1.3-contributor-free"
+  name: string;                   // display text
+  description: string | null;
+  current: boolean;               // the harness default for a fresh session
 };
 ```
 
 `host::start_agent_run` prepends the compilation prompt — the job ID, the normalized article's artifact ID, and the analysis/narration/coverage instructions — to `StartAgentRun.prompt` before handing it to `AcpClient`. The frontend only supplies the operator's own prompt text.
+
+A requested `model` is applied through `session/set_config_option` after `session/new`, validated against the model selectors the harness advertised in its session config options. An unknown value fails the run with every accepted value named; a harness that advertises no model selector fails with instructions to run without one. Model selection is only supported for the OpenCode provider. `list_agent_models` spawns the harness, runs `initialize` plus `session/new`, and returns the advertised models without starting a run, so the UI picker only ever offers values the harness accepts.
 
 `AgentRunSupervision` carries `inactivity_timeout` and an optional `max_runtime`; both are configurable through `DIGEST_AGENT_INACTIVITY_TIMEOUT_SECS` and `DIGEST_AGENT_MAX_RUNTIME_SECS`, and `max_runtime` is disabled by default. Cancellation is cooperative: `cancel_agent_run` flips a flag that the ACP read loop observes.
 
