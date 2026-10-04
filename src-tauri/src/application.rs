@@ -104,6 +104,7 @@ pub enum NewAgentEventKind {
     SessionCompleted,
     SessionCancelled,
     SessionFailed,
+    SessionReminded,
 }
 
 impl NewAgentEventKind {
@@ -120,6 +121,7 @@ impl NewAgentEventKind {
             Self::SessionCompleted => "session_completed",
             Self::SessionCancelled => "session_cancelled",
             Self::SessionFailed => "session_failed",
+            Self::SessionReminded => "session_reminded",
         }
     }
 
@@ -136,6 +138,7 @@ impl NewAgentEventKind {
             "session_completed" => Ok(Self::SessionCompleted),
             "session_cancelled" => Ok(Self::SessionCancelled),
             "session_failed" => Ok(Self::SessionFailed),
+            "session_reminded" => Ok(Self::SessionReminded),
             other => Err(DigestError::InvalidInput(format!(
                 "unknown agent event kind: {other}"
             ))),
@@ -175,6 +178,7 @@ pub struct StartRunAttempt {
 pub enum AttemptStatus {
     Running,
     Completed,
+    Incomplete,
     Failed,
     Cancelled,
 }
@@ -184,6 +188,7 @@ impl AttemptStatus {
         match self {
             Self::Running => "running",
             Self::Completed => "completed",
+            Self::Incomplete => "incomplete",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
         }
@@ -193,6 +198,7 @@ impl AttemptStatus {
         match value {
             "running" => Ok(Self::Running),
             "completed" => Ok(Self::Completed),
+            "incomplete" => Ok(Self::Incomplete),
             "failed" => Ok(Self::Failed),
             "cancelled" => Ok(Self::Cancelled),
             other => Err(DigestError::InvalidInput(format!(
@@ -221,6 +227,7 @@ pub enum RunStatus {
     Captured,
     Running,
     Completed,
+    Incomplete,
     Failed,
     Cancelled,
 }
@@ -230,6 +237,7 @@ impl From<AttemptStatus> for RunStatus {
         match status {
             AttemptStatus::Running => Self::Running,
             AttemptStatus::Completed => Self::Completed,
+            AttemptStatus::Incomplete => Self::Incomplete,
             AttemptStatus::Failed => Self::Failed,
             AttemptStatus::Cancelled => Self::Cancelled,
         }

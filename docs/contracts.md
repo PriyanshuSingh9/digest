@@ -118,7 +118,9 @@ type RunSnapshot = {
 };
 ```
 
-`AgentEvent.kind` is the `NewAgentEventKind` set, serialized snake_case: `session_started`, `agent_message`, `agent_thinking`, `tool_started`, `tool_progress`, `tool_completed`, `tool_failed`, `artifact_created`, `session_completed`, `session_cancelled`, `session_failed`.
+`AgentEvent.kind` is the `NewAgentEventKind` set, serialized snake_case: `session_started`, `agent_message`, `agent_thinking`, `tool_started`, `tool_progress`, `tool_completed`, `tool_failed`, `artifact_created`, `session_completed`, `session_cancelled`, `session_failed`, `session_reminded`.
+
+Attempts end `completed` only when the agent produced both the analysis and the narration plan. When the session ends with required work still missing — after up to two follow-up prompts naming the exact outstanding steps — the attempt is `incomplete`, never `completed`, with the missing artifacts named in its error. `incomplete` flows through to `RunStatus` the same way.
 
 `HostInfo` reports the resolved runtime environment to the UI:
 

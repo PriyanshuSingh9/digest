@@ -530,3 +530,32 @@ The player draws exactly the authored spec and infers nothing. Layout is longest
 **When to Revisit:**
 - Revisit if figures need authored treatment (cropping, annotation, zoom regions). That is a `VisualSpec` variant, not an extension of the image reference.
 - Revisit if an article's figures outnumber what narration pacing can hold. One figure per segment is a pacing choice, not a schema limit.
+
+---
+
+## D-018 — Remind the agent of outstanding steps, then record incompleteness honestly
+
+- **Status:** Accepted
+- **Date:** 2026-10-04
+
+**Context:** A run ended `completed` with zero artifacts: the agent read the article, thought for six minutes, ended its turn, and Digest recorded success. The attempt status lied because it tracked how the session ended, not what the session produced. Two failures in one: the agent was never told what it left undone, and the operator was told everything was fine.
+
+**Decision:** After every agent-ended turn (`end_turn`, `max_tokens`, `max_turn_requests` — never refusals or cancellations), Digest checks the job for its required artifacts (analysis, narration plan) and, while rounds remain, sends a follow-up prompt naming the exact outstanding tool calls, up to two rounds. Each reminder is recorded as a `session_reminded` event carrying the prompt text. When the session ends with work still missing, the attempt is `incomplete` with the missing artifacts named in its error — a distinct state from `completed` and from `failed` — and it flows through to `RunStatus` unchanged.
+
+**Alternatives Considered:**
+
+| Alternative | Why Not |
+| :--- | :--- |
+| **Surface the gap in the UI only** | Tells the operator but never the agent. The run that motivated this needed one more prompt, not a warning banner. |
+| **Unbounded re-prompting until complete** | A stuck agent loops forever on Digest's dime. Two rounds rescue the ramble-and-stop case; a genuinely blocked agent still terminates honestly. |
+| **Fold incompleteness into `failed`** | Failed means something broke. An agent that ended cleanly but produced nothing is a different fact, and retry UX differs: re-running an incomplete job continues from existing artifacts. |
+| **Remind on refusals too** | A refusal is the agent declining the work. Re-prompting past it is nagging, not supervision. |
+
+**Tradeoffs & Caveats:**
+- Each reminder round is a full prompt round-trip billed to the operator's model budget, up to two per run. The rounds are visible in the event stream, so the cost is auditable.
+- The completeness check is artifact presence, not quality. An agent that writes a thin analysis still completes. Depth remains the compilation prompt's job, not the watchdog's.
+- Cancellation and inactivity supervision wrap the whole loop unchanged: a cancel mid-reminder ends `cancelled`, and a silent agent trips the inactivity watchdog exactly as before.
+
+**When to Revisit:**
+- Revisit the round budget if agents routinely exhaust it. Two rescues the observed failure; persistent exhaustion points at the compilation prompt, not the budget.
+- Revisit if a third required artifact appears. The missing-steps function is the single place that defines completeness.

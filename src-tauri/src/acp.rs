@@ -1,4 +1,7 @@
-use crate::{AttemptStatus, DigestService, NewAgentEvent, NewAgentEventKind, StartRunAttempt};
+use crate::{
+    ArtifactKind, AttemptStatus, DigestError, DigestService, NewAgentEvent, NewAgentEventKind,
+    StartRunAttempt,
+};
 use agent_client_protocol::schema::v1::{
     ContentBlock, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
@@ -245,6 +248,11 @@ pub enum PermissionPolicy {
 pub struct AgentRunResult {
     pub session_id: String,
     pub stop_reason: String,
+    /// Required work still missing when the session ended, empty when the
+    /// agent produced both the analysis and the narration plan.
+    pub missing_work: Vec<String>,
+    /// Follow-up prompts Digest sent after the agent ended early.
+    pub reminder_rounds: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -587,30 +595,70 @@ impl AcpClient {
                     .map_err(|error| {
                         agent_client_protocol::Error::internal_error().data(error.to_string())
                     })?;
-                let response = connection
-                    .send_request(PromptRequest::new(
-                        session_id.clone(),
-                        vec![ContentBlock::Text(TextContent::new(prompt))],
-                    ))
-                    .block_task()
-                    .await?;
-                lifecycle_service
-                    .record_agent_event(NewAgentEvent {
-                        job_id,
-                        session_id: session_id.to_string(),
-                        kind: match response.stop_reason {
-                            StopReason::EndTurn => NewAgentEventKind::SessionCompleted,
-                            StopReason::Cancelled => NewAgentEventKind::SessionCancelled,
-                            _ => NewAgentEventKind::SessionFailed,
-                        },
-                        message: format!("ACP session stopped: {:?}", response.stop_reason),
-                    })
-                    .map_err(|error| {
-                        agent_client_protocol::Error::internal_error().data(error.to_string())
-                    })?;
+                // The agent may end its turn having written nothing, as observed
+                // when a small model rambles through a long article and stops.
+                // After each agent-ended turn, check the job for its required
+                // artifacts and, while rounds remain, hand the agent its exact
+                // outstanding steps instead of accepting an empty completion.
+                let mut prompt_text = prompt;
+                let mut reminder_rounds: u32 = 0;
+                let mut missing_work: Vec<String> = Vec::new();
+                let response = loop {
+                    let response = connection
+                        .send_request(PromptRequest::new(
+                            session_id.clone(),
+                            vec![ContentBlock::Text(TextContent::new(prompt_text))],
+                        ))
+                        .block_task()
+                        .await?;
+                    lifecycle_activity.record();
+                    lifecycle_service
+                        .record_agent_event(NewAgentEvent {
+                            job_id: job_id.clone(),
+                            session_id: session_id.to_string(),
+                            kind: match response.stop_reason {
+                                StopReason::EndTurn => NewAgentEventKind::SessionCompleted,
+                                StopReason::Cancelled => NewAgentEventKind::SessionCancelled,
+                                _ => NewAgentEventKind::SessionFailed,
+                            },
+                            message: format!(
+                                "ACP session stopped: {:?}",
+                                response.stop_reason
+                            ),
+                        })
+                        .map_err(|error| {
+                            agent_client_protocol::Error::internal_error().data(error.to_string())
+                        })?;
+                    if !is_resumable_stop(&response.stop_reason) {
+                        break response;
+                    }
+                    missing_work = missing_work_artifacts(&lifecycle_service, &job_id)
+                        .map_err(|error| {
+                            agent_client_protocol::Error::internal_error().data(error.to_string())
+                        })?;
+                    if missing_work.is_empty() || reminder_rounds >= MAX_REMINDER_ROUNDS
+                    {
+                        break response;
+                    }
+                    reminder_rounds += 1;
+                    prompt_text = reminder_prompt(reminder_rounds, &missing_work);
+                    lifecycle_activity.record();
+                    lifecycle_service
+                        .record_agent_event(NewAgentEvent {
+                            job_id: job_id.clone(),
+                            session_id: session_id.to_string(),
+                            kind: NewAgentEventKind::SessionReminded,
+                            message: prompt_text.clone(),
+                        })
+                        .map_err(|error| {
+                            agent_client_protocol::Error::internal_error().data(error.to_string())
+                        })?;
+                };
                 Ok(AgentRunResult {
                     session_id: session_id.to_string(),
                     stop_reason: stop_reason_name(response.stop_reason).into(),
+                    missing_work,
+                    reminder_rounds,
                 })
             });
         let result =
@@ -648,6 +696,8 @@ impl AcpClient {
                     return Ok(AgentRunResult {
                         session_id: session_id.unwrap_or_else(|| "unavailable".into()),
                         stop_reason: "cancelled".into(),
+                        missing_work: Vec::new(),
+                        reminder_rounds: 0,
                     });
                 }
                 SupervisionOutcome::Inactive => {
@@ -729,16 +779,35 @@ impl AcpClient {
             return Err(AcpClientError::Persistence(error));
         }
         let status = match result.stop_reason.as_str() {
+            "end_turn" | "max_tokens" | "max_turn_requests"
+                if !result.missing_work.is_empty() =>
+            {
+                AttemptStatus::Incomplete
+            }
             "end_turn" => AttemptStatus::Completed,
             "cancelled" => AttemptStatus::Cancelled,
             _ => AttemptStatus::Failed,
+        };
+        let failure_message;
+        let error = match status {
+            AttemptStatus::Failed => Some(result.stop_reason.as_str()),
+            AttemptStatus::Incomplete => {
+                failure_message = format!(
+                    "agent ended without completing the work after {} reminder(s): missing {}. \
+                     Re-run to continue from the existing artifacts.",
+                    result.reminder_rounds,
+                    result.missing_work.join("; "),
+                );
+                Some(failure_message.as_str())
+            }
+            _ => None,
         };
         self.service
             .finish_run_attempt(
                 &attempt.attempt_id,
                 status,
                 Some(&result.session_id),
-                (status == AttemptStatus::Failed).then_some(result.stop_reason.as_str()),
+                error,
             )
             .map_err(|error| AcpClientError::Persistence(error.to_string()))?;
         Ok(result)
@@ -897,6 +966,69 @@ fn tool_update_event_kind(
     }
 }
 
+/// Follow-up prompts Digest sends when the agent ends its turn with required
+/// work still missing. Bounded so a stuck agent cannot loop forever; each
+/// round is recorded as a `session_reminded` event for inspection.
+const MAX_REMINDER_ROUNDS: u32 = 2;
+
+/// Turns the agent may resume from: it ended on its own side, whether
+/// cleanly, cut off by a token budget, or stopped between turns. Refusals and
+/// cancellations are terminal and never reminded.
+fn is_resumable_stop(reason: &StopReason) -> bool {
+    matches!(
+        reason,
+        StopReason::EndTurn | StopReason::MaxTokens | StopReason::MaxTurnRequests
+    )
+}
+
+/// Human steps for the work no artifact covers yet. Pure over artifact
+/// presence so the wording is unit-testable without a database.
+fn describe_missing_work(has_analysis: bool, has_narration: bool) -> Vec<String> {
+    let mut missing = Vec::new();
+    if !has_analysis {
+        missing.push(
+            "the analysis is missing: call write_analysis with the central argument and \
+             findings citing source block ids before doing anything else"
+                .into(),
+        );
+    }
+    if !has_narration {
+        missing.push(
+            "the narration plan is missing: call write_narration_plan with source-grounded \
+             segments covering every source block before ending the turn"
+                .into(),
+        );
+    }
+    missing
+}
+
+fn missing_work_artifacts(
+    service: &DigestService,
+    job_id: &str,
+) -> Result<Vec<String>, DigestError> {
+    let has_analysis = service
+        .latest_artifact(job_id, ArtifactKind::Analysis)?
+        .is_some();
+    let has_narration = service
+        .latest_artifact(job_id, ArtifactKind::NarrationPlan)?
+        .is_some();
+    Ok(describe_missing_work(has_analysis, has_narration))
+}
+
+fn reminder_prompt(round: u32, missing: &[String]) -> String {
+    let steps = missing
+        .iter()
+        .enumerate()
+        .map(|(index, step)| format!("{}. {}", index + 1, step))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "You ended the turn with required work still missing (reminder {round} of \
+         {MAX_REMINDER_ROUNDS}). Complete exactly these steps now, then end the turn:\n{steps}\n\
+         Do not end the turn until the missing artifacts exist."
+    )
+}
+
 fn stop_reason_name(reason: StopReason) -> &'static str {
     match reason {
         StopReason::EndTurn => "end_turn",
@@ -913,6 +1045,41 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::SessionConfigSelectOption;
     use std::future::pending;
+
+    #[test]
+    fn missing_work_names_each_absent_artifact() {
+        assert!(describe_missing_work(true, true).is_empty());
+
+        let missing = describe_missing_work(false, false);
+        assert_eq!(missing.len(), 2);
+        assert!(missing[0].contains("write_analysis"), "{missing:?}");
+        assert!(missing[1].contains("write_narration_plan"), "{missing:?}");
+
+        let missing = describe_missing_work(true, false);
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].contains("write_narration_plan"), "{missing:?}");
+    }
+
+    #[test]
+    fn reminder_prompt_carries_the_steps_and_the_round_budget() {
+        let missing = describe_missing_work(false, true);
+        let prompt = reminder_prompt(1, &missing);
+        assert!(prompt.contains("reminder 1 of 2"), "{prompt}");
+        assert!(prompt.contains("write_analysis"), "{prompt}");
+        assert!(
+            prompt.contains("Do not end the turn until the missing artifacts exist."),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn only_agent_ended_turns_are_resumable() {
+        assert!(is_resumable_stop(&StopReason::EndTurn));
+        assert!(is_resumable_stop(&StopReason::MaxTokens));
+        assert!(is_resumable_stop(&StopReason::MaxTurnRequests));
+        assert!(!is_resumable_stop(&StopReason::Refusal));
+        assert!(!is_resumable_stop(&StopReason::Cancelled));
+    }
 
     fn model_selector() -> SessionConfigOption {
         SessionConfigOption::select(

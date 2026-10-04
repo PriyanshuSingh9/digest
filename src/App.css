@@ -22,6 +22,9 @@
   --danger-surface: oklch(0.21 0.05 25);
   --danger-line: oklch(0.42 0.09 25);
 
+  --warn: oklch(0.78 0.14 80);
+  --warn-line: oklch(0.45 0.08 80);
+
   --focus: oklch(0.8 0.11 255);
 
   --space-1: 4px;
@@ -878,6 +881,15 @@ textarea:focus {
 
 .pill.danger .status-dot {
   background: var(--danger);
+}
+
+.pill.warn {
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+
+.pill.warn .status-dot {
+  background: var(--warn);
 }
 
 /* ---------- observe ---------- */

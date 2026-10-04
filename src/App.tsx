@@ -41,7 +41,7 @@ type RunAttempt = {
   jobId: string;
   provider: Provider;
   providerSessionId: string | null;
-  status: "running" | "completed" | "failed" | "cancelled";
+  status: "running" | "completed" | "incomplete" | "failed" | "cancelled";
   startedAtMs: number;
   finishedAtMs: number | null;
   error: string | null;
@@ -139,7 +139,7 @@ type RunSummary = {
   jobId: string;
   title: string | null;
   provider: Provider | null;
-  status: "captured" | "running" | "completed" | "failed" | "cancelled";
+  status: "captured" | "running" | "completed" | "incomplete" | "failed" | "cancelled";
   updatedAtMs: number;
   artifactCount: number;
   eventCount: number;
@@ -239,7 +239,9 @@ const statusTone = (status: string) =>
       ? "info"
       : status === "failed"
         ? "danger"
-        : "quiet";
+        : status === "incomplete"
+          ? "warn"
+          : "quiet";
 const provenanceLabel = (kind: string | undefined) =>
   (kind && PROVENANCE_LABELS[kind]) || (kind ? eventLabel(kind) : "Unattributed");
 
